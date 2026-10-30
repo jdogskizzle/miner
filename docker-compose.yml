@@ -7,7 +7,8 @@
 #   switcher   Picks the coin that pays best on this GPU (switcher/coins.toml) and writes
 #              it to ./state/active.env, which the miner and gpu-yield read.
 #   exporter   Prometheus metrics for Grafana.
-# Turn mining off: MINING_ENABLED=false in .env, then `docker compose up -d`.
+#   control    Web control panel: status, pause/resume, pin a coin, compare prices now.
+# Turn mining off for good: MINING_ENABLED=false in .env, then `docker compose up -d`.
 services:
   miner:
     build: ./miner
@@ -44,7 +45,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: utility
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./state:/state:ro           # active coin's power limit and clocks
+      - ./state:/state              # reads the active coin and pause switch, writes status.json
     deploy:
       resources:
         reservations:
@@ -85,12 +86,31 @@ services:
     container_name: coin-switcher
     restart: unless-stopped
     environment:
-      GPU_MODEL: ${GPU_MODEL:-3080ti}   # hashrate.no GPU page used for benchmark hashrates
+      GPU_MODEL: ${GPU_MODEL:?set GPU_MODEL in .env}   # hashrate.no GPU page used for benchmark hashrates
     volumes:
       - ./switcher/coins.toml:/config/coins.toml:ro
       - ./state:/state
       - /var/run/docker.sock:/var/run/docker.sock   # to restart the miner on a switch
     networks: [default, metrics]
+    logging:
+      options: { max-size: 10m, max-file: "3" }
+
+  # Control panel at http://<host>:CONTROL_PORT. It has no login, so keep it on your
+  # home network (or behind a reverse proxy that limits access).
+  control:
+    build: ./control
+    image: miner-control:local
+    container_name: miner-control
+    restart: unless-stopped
+    environment:
+      STATE_DIR: /state
+      COINS_FILE: /config/coins.toml
+      EXPORTER_URL: http://miner-exporter:9835
+    volumes:
+      - ./switcher/coins.toml:/config/coins.toml:ro
+      - ./state:/state              # writes control.json, reads everyone's status
+    ports:
+      - "${CONTROL_PORT:-8095}:8000"
     logging:
       options: { max-size: 10m, max-file: "3" }
 
@@ -100,4 +120,4 @@ volumes:
 networks:
   metrics:   # the network Prometheus is on (your Grafana/Prometheus Compose project's)
     external: true
-    name: ${METRICS_NETWORK:-grafana_default}
+    name: ${METRICS_NETWORK:?set METRICS_NETWORK in .env}

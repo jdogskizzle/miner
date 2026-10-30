@@ -17,8 +17,14 @@ until [ -f /state/active.env ]; do
   sleep 2
   waited=$((waited + 2))
 done
-. /state/active.env
-echo "Mining ${PROFILE_COIN:-?}: ${ALGORITHM} on ${POOL}"
+# While gpu-yield benchmarks a coin, it names that coin in bench.env instead.
+if [ -f /state/bench.env ]; then
+  . /state/bench.env
+  echo "Benchmarking ${PROFILE_COIN:-?}: ${ALGORITHM} on ${POOL}"
+else
+  . /state/active.env
+  echo "Mining ${PROFILE_COIN:-?}: ${ALGORITHM} on ${POOL}"
+fi
 
 # Kryptex account mining: login is <kryptex username>/<worker name>.
 exec ./SRBMiner-MULTI \

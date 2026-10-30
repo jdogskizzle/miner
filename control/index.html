@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miner</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2322c55e'/></svg>">
+<style>
+:root {
+  --bg: #f4f5f7; --card: #fff; --text: #16181d; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #2563eb; --green: #16a34a; --amber: #d97706; --blue: #2563eb; --red: #dc2626; --gray: #9ca3af;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --card: #171a21; --text: #e6e8ec; --muted: #8b93a1; --line: #272b35;
+    --accent: #60a5fa; --green: #22c55e; --amber: #f59e0b; --blue: #60a5fa; --red: #f87171; --gray: #6b7280;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; }
+h1 { font-size: 20px; margin: 0 0 16px; display: flex; justify-content: space-between; align-items: baseline; }
+h1 small { font-size: 12px; font-weight: 400; color: var(--muted); }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 12px; font-weight: 600;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+.state { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 600; }
+.dot { width: 14px; height: 14px; border-radius: 50%; background: var(--gray); flex: none; }
+.dot.green { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 25%, transparent); }
+.dot.amber { background: var(--amber); } .dot.blue { background: var(--blue); } .dot.red { background: var(--red); }
+.dot.purple { background: #a855f7; }
+.reason { color: var(--muted); margin: 4px 0 0 26px; font-size: 14px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-top: 18px; }
+.stat { border-top: 1px solid var(--line); padding-top: 10px; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); }
+.controls { display: grid; gap: 16px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.row > label { min-width: 90px; color: var(--muted); font-size: 14px; }
+button, select { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+  color: var(--text); padding: 8px 14px; cursor: pointer; }
+button:hover:not(:disabled), select:hover { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; min-width: 150px; }
+button.warn { background: var(--amber); border-color: var(--amber); color: #fff; font-weight: 600; min-width: 150px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); background: var(--bg); }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.note { font-size: 13px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 9px 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; }
+td.btns { text-align: right; white-space: nowrap; }
+tr.active td { background: color-mix(in srgb, var(--green) 9%, transparent); }
+tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.tag.on { border-color: var(--green); color: var(--green); }
+.tag.pin { border-color: var(--accent); color: var(--accent); }
+.tag.mode { border-color: var(--accent); color: var(--accent); text-transform: capitalize; }
+td button { padding: 3px 10px; font-size: 13px; }
+.sub { color: var(--muted); font-size: 12px; }
+.table-wrap { overflow-x: auto; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 10px 0 4px; }
+.bar div { height: 100%; background: var(--accent); transition: width .4s; }
+.bench-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bench-head b { font-size: 16px; }
+#error { display: none; background: color-mix(in srgb, var(--red) 15%, var(--card)); border-color: var(--red); }
+@media (max-width: 560px) { .hide-sm { display: none; } .state { font-size: 19px; } .row > label { min-width: 0; width: 100%; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Miner <small id="updated"></small></h1>
+
+  <div class="card" id="error"></div>
+
+  <section class="card">
+    <div class="state"><span class="dot" id="dot"></span><span id="state">Loading…</span></div>
+    <div class="reason" id="reason"></div>
+    <div class="stats">
+      <div class="stat"><b id="s-hash">–</b><span>Hashrate</span></div>
+      <div class="stat"><b id="s-usd">–</b><span>Est. per day</span></div>
+      <div class="stat"><b id="s-power">–</b><span>GPU power / cap</span></div>
+      <div class="stat"><b id="s-temp">–</b><span>GPU temp / fan</span></div>
+      <div class="stat"><b id="s-shares">–</b><span>Shares accepted / rejected</span></div>
+      <div class="stat"><b id="s-since">–</b><span>On this coin for</span></div>
+    </div>
+  </section>
+
+  <section class="card controls">
+    <h2>Controls</h2>
+    <div class="row">
+      <label>Mining</label>
+      <button id="pause" class="warn" disabled>Pause mining</button>
+      <span class="note" id="pause-note"></span>
+    </div>
+    <div class="row">
+      <label>Power mode</label>
+      <div class="seg" id="modes">
+        <button data-mode="max">Max</button><button data-mode="efficient">Efficient</button><button data-mode="low">Low</button>
+      </div>
+      <span class="note" id="mode-note"></span>
+    </div>
+    <div class="row">
+      <label for="coin">Coin</label>
+      <select id="coin" disabled></select>
+      <span class="note" id="coin-note"></span>
+    </div>
+    <div class="row">
+      <label>Prices</label>
+      <button id="check" disabled>Compare now</button>
+      <span class="note" id="check-note"></span>
+    </div>
+  </section>
+
+  <section class="card" id="bench-card" style="display:none">
+    <h2>Benchmark <button id="bench-cancel" style="display:none">Cancel</button></h2>
+    <div class="bench-head"><b id="bench-title"></b><span class="note" id="bench-when"></span></div>
+    <div class="bar" id="bench-bar"><div></div></div>
+    <div class="note" id="bench-msg"></div>
+    <div class="table-wrap">
+      <table id="bench-table">
+        <thead><tr><th>Core</th><th>Memory</th><th class="num">Hashrate</th><th class="num">Power</th>
+          <th class="num hide-sm">Per watt</th><th></th></tr></thead>
+        <tbody id="bench-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Coins</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Coin</th><th class="num">Est. $/day</th><th class="num">Hashrate</th>
+          <th class="num hide-sm">Price</th><th></th></tr></thead>
+        <tbody id="coins"></tbody>
+      </table>
+    </div>
+    <p class="note">Estimates are for the selected power mode. A benchmark mines the coin at a range of
+      clock settings (about 10 minutes, still earning) and saves the best Max, Efficient and Low settings
+      for it. Automatic mode switches only when another coin is clearly ahead for a while
+      (rules in <code>switcher/coins.toml</code>).</p>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const MODES = ["max", "efficient", "low"];
+let data = null, busy = false;
+
+function hashrate(hs, unit = "/s") {
+  if (!hs) return "–";
+  const units = ["H", "KH", "MH", "GH", "TH", "PH"];
+  let i = 0;
+  while (hs >= 1000 && i < units.length - 1) { hs /= 1000; i++; }
+  return hs.toFixed(hs < 10 ? 2 : hs < 100 ? 1 : 0) + " " + units[i] + unit;
+}
+const usd = v => v == null ? "–" : "$" + v.toFixed(2);
+function price(v) {
+  if (v == null) return "–";
+  return "$" + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toPrecision(3));
+}
+function duration(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor(s % 86400 / 3600) + "h";
+}
+const ago = (t, now) => duration(now - t) + " ago";
+const clock = v => v ? v + " MHz" : "auto";
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const coinName = key => (data.coins.find(c => c.key === key) || {name: key}).name;
+const sameSetting = (a, b) => a && b && (a.core_clock ?? null) === (b.core_clock ?? null)
+                                      && (a.mem_clock ?? null) === (b.mem_clock ?? null);
+
+// Benchmark state: the one gpu-yield is running / ran last, or a request it hasn't started.
+function benchState(d) {
+  const ctl = d.control || {}, b = d.benchmark;
+  const req = ctl.benchmark;
+  const started = b && req && Math.abs(Number(b.requested) - req.requested) < 0.01;
+  if (req && !started) return {queued: true, coin: req.coin};
+  if (b && b.status === "running") return {running: true, coin: b.coin};
+  return {};
+}
+
+function render() {
+  const d = data, now = Date.now() / 1000;
+  const w = d.watchdog || {}, live = d.live || {}, ctl = d.control || {}, act = d.active || {};
+  const bs = benchState(d), b = d.benchmark;
+  const coin = act.coin ? `${act.name} (${act.coin})` : "no coin yet";
+  const states = {
+    mining:       ["green",  `Mining ${coin}`],
+    benchmarking: ["purple", `Benchmarking ${b ? coinName(b.coin) : ""}`],
+    paused:       ["amber",  "Paused"],
+    yielded:      ["blue",   "Paused for another app"],
+    cooling:      ["blue",   `Resuming in ${duration((w.resume_at || now) - now)}`],
+    waiting:      ["gray",   "Waiting for a coin"],
+    disabled:     ["gray",   "Disabled"],
+    stopped:      ["red",    "Watchdog not running"],
+  };
+  let [color, text] = states[w.state] || ["gray", "Unknown"];
+  // The watchdog says "mining" once it has started the miner; trust the miner's own report too.
+  if (w.state === "mining" && d.live && !live.miner_up) [color, text] = ["amber", `Starting ${coin}…`];
+  if (ctl.paused && w.state !== "paused" && w.state !== "disabled") text += " (pausing…)";
+  $("dot").className = "dot " + color;
+  $("state").textContent = text;
+  let reason = w.state === "mining" && act.power_mode
+    ? (act.tuned ? cap(act.power_mode) + " mode" : "not benchmarked yet") : (w.reason || "");
+  if (w.since && w.state !== "cooling") reason += (reason ? " · " : "") + "since " + ago(w.since, now);
+  $("reason").textContent = reason;
+
+  const mining = (w.state === "mining" || w.state === "benchmarking") && live.miner_up;
+  $("s-hash").textContent = mining ? hashrate(live.miner_hashrate_hs) : "–";
+  $("s-usd").textContent = mining && w.state === "mining" ? usd(live.miner_est_usd_per_day) : "–";
+  $("s-power").textContent = live.gpu_power_watts != null
+    ? `${Math.round(live.gpu_power_watts)} / ${Math.round(live.gpu_power_limit_watts)} W` : "–";
+  $("s-temp").textContent = live.gpu_temperature_celsius != null
+    ? `${Math.round(live.gpu_temperature_celsius)}°C / ${Math.round(live.gpu_fan_percent)}%` : "–";
+  $("s-shares").textContent = mining ? `${live.miner_shares_accepted} / ${live.miner_shares_rejected}` : "–";
+  $("s-since").textContent = act.since ? duration(now - act.since) : "–";
+
+  // Pause
+  const pause = $("pause");
+  pause.disabled = busy || w.state === "disabled";
+  pause.textContent = ctl.paused ? "Resume mining" : "Pause mining";
+  pause.className = ctl.paused ? "primary" : "warn";
+  $("pause-note").textContent = w.state === "disabled" ? "Turned off in .env (MINING_ENABLED)"
+    : ctl.paused ? "Stays paused until you resume, even after a restart"
+    : "Other apps still take over the GPU automatically";
+
+  // Power mode
+  const mode = MODES.includes(ctl.power_mode) ? ctl.power_mode : d.config_power_mode;
+  $("modes").querySelectorAll("button").forEach(btn => {
+    btn.classList.toggle("on", btn.dataset.mode === mode);
+    btn.disabled = busy;
+  });
+  const tuned = act.coin && (d.tuning[act.coin] || {}).modes;
+  let modeNote;
+  if (!act.coin) modeNote = "";
+  else if (!tuned) modeNote = `${act.name} isn't benchmarked yet, so every mode runs on its default settings`;
+  else {
+    const m = tuned[mode];
+    modeNote = `${act.name}: ${hashrate(m.hashrate)} at ${Math.round(m.power)} W`
+      + ` (core ${clock(m.core_clock)}, memory ${clock(m.mem_clock)})`;
+    if (act.power_mode !== mode) modeNote += " · applying…";
+  }
+  $("mode-note").textContent = modeNote;
+
+  // Coin selector
+  const sel = $("coin");
+  if (document.activeElement !== sel) {
+    const opts = [["", "Automatic (best paying)"], ...d.coins.map(c => [c.key, `${c.name} (${c.key})`])];
+    sel.innerHTML = opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+    sel.value = ctl.pin || "";
+  }
+  sel.disabled = busy;
+  const pin = ctl.pin || d.config_pin;
+  $("coin-note").textContent = ctl.pin
+    ? (act.coin === ctl.pin ? "Pinned" : `Switching to ${coinName(ctl.pin)}…`)
+    : d.config_pin ? `Pinned to ${d.config_pin} in coins.toml` : "Switcher picks the coin";
+
+  // Compare now
+  const est = d.estimates;
+  $("check").disabled = busy;
+  const asked = ctl.check_requested && (!est || est.updated < ctl.check_requested);
+  $("check-note").textContent = asked ? "Checking…"
+    : est ? `Last ${ago(est.updated, now)}, next in ${duration(est.next_check - now)}`
+    : "No prices yet";
+
+  renderBenchmark(d, bs, now);
+
+  // Coins table
+  const coins = (est && est.coins) || {};
+  const ranked = d.coins.map(c => ({...c, ...(coins[c.key] || {})}))
+    .sort((a, b) => (b.usd_day ?? -1) - (a.usd_day ?? -1));
+  const best = ranked.find(c => c.usd_day != null && c.liquid);
+  const benchBusy = bs.running || bs.queued;
+  $("coins").innerHTML = ranked.map(c => {
+    const tags = [];
+    if (c.key === act.coin) tags.push(w.state === "mining" ? '<span class="tag on">mining</span>' : '<span class="tag">active coin</span>');
+    if (c.key === pin) tags.push('<span class="tag pin">pinned</span>');
+    if (best && c.key === best.key && c.key !== act.coin) tags.push('<span class="tag">best</span>');
+    if (c.usd_day != null && !c.liquid) tags.push('<span class="tag">thin market</span>');
+    const t = d.tuning[c.key];
+    const tuneNote = bs.coin === c.key ? (bs.running ? "benchmarking now" : "benchmark queued")
+      : t && t.modes ? "benchmarked " + ago(t.benchmarked, now)
+      : t && t.error ? "benchmark " + t.error.split(":")[0]
+      : "not benchmarked";
+    const hsSrc = c.hashrate_source ? `<div class="sub">${c.hashrate_source}</div>` : "";
+    const pinBtn = c.key === ctl.pin ? `<button data-pin="">Unpin</button>` : `<button data-pin="${c.key}">Pin</button>`;
+    const benchBtn = `<button data-bench="${c.key}" ${benchBusy ? "disabled" : ""}>${t && t.modes ? "Re-run" : "Benchmark"}</button>`;
+    return `<tr class="${c.key === act.coin ? "active" : ""}">
+      <td><b>${c.name}</b> <span class="sub">${c.key}</span> ${tags.join("")}
+        <div class="sub">${c.algorithm} · ${tuneNote}</div></td>
+      <td class="num">${usd(c.usd_day)}</td>
+      <td class="num">${hashrate(c.hashrate)}${hsSrc}</td>
+      <td class="num hide-sm">${price(c.price_usd)}</td>
+      <td class="btns">${pinBtn} ${benchBtn}</td></tr>`;
+  }).join("");
+  $("coins").querySelectorAll("button[data-pin]").forEach(btn => {
+    btn.disabled = busy;
+    btn.onclick = () => send({pin: btn.dataset.pin});
+  });
+  $("coins").querySelectorAll("button[data-bench]").forEach(btn => {
+    if (busy) btn.disabled = true;
+    btn.onclick = () => {
+      const name = coinName(btn.dataset.bench);
+      if (confirm(`Benchmark ${name}? The miner switches to ${name} for about 10 minutes while it tries different clock settings (it keeps earning).`))
+        send({benchmark: btn.dataset.bench});
+    };
+  });
+
+  $("updated").textContent = "updated " + new Date(d.now * 1000).toLocaleTimeString();
+}
+
+function renderBenchmark(d, bs, now) {
+  const b = d.benchmark, ctl = d.control || {};
+  const card = $("bench-card");
+  if (!b && !bs.queued) { card.style.display = "none"; return; }
+  card.style.display = "";
+  $("bench-cancel").style.display = bs.running || bs.queued ? "" : "none";
+  $("bench-cancel").disabled = busy;
+
+  if (bs.queued) {
+    $("bench-title").textContent = coinName(bs.coin) + ": queued";
+    $("bench-when").textContent = "";
+    $("bench-msg").textContent = ctl.paused ? "Starts when you resume mining."
+      : "Starts as soon as the GPU is free.";
+    $("bench-bar").style.display = "none";
+    $("bench-table").style.display = "none";
+    return;
+  }
+  const labels = {running: "running", done: "done", failed: "failed", cancelled: "cancelled", interrupted: "interrupted"};
+  $("bench-title").textContent = `${b.name || coinName(b.coin)}: ${labels[b.status] || b.status}`
+    + (b.source === "auto" ? " (automatic, first time on this coin)" : "");
+  $("bench-when").textContent = b.status === "running"
+    ? `step ${b.step} of up to ${b.steps}` : "finished " + ago(b.updated, now);
+  let msg = b.message || "";
+  if (b.status === "interrupted") msg += " Run it again from the coin list.";
+  $("bench-msg").textContent = msg;
+  $("bench-bar").style.display = b.status === "running" ? "" : "none";
+  $("bench-bar").firstElementChild.style.width = (b.steps ? 100 * Math.max(0, b.step - 1) / b.steps : 0) + "%";
+
+  const rows = (b.results || []).map(r => ({...r}));
+  if (b.status === "running" && b.current) rows.push({...b.current, pending: true});
+  $("bench-table").style.display = rows.length ? "" : "none";
+  const modes = b.modes || {};
+  $("bench-rows").innerHTML = rows.map(r => {
+    const tags = MODES.filter(m => sameSetting(modes[m], r)).map(m => `<span class="tag mode">${m}</span>`).join("");
+    return `<tr class="${r.pending ? "current" : ""}">
+      <td>${clock(r.core_clock)}</td><td>${clock(r.mem_clock)}</td>
+      <td class="num">${r.pending ? "measuring…" : hashrate(r.hashrate)}</td>
+      <td class="num">${r.pending ? "" : Math.round(r.power) + " W"}</td>
+      <td class="num hide-sm">${r.pending || !r.power ? "" : hashrate(r.hashrate / r.power, "/W")}</td>
+      <td class="btns">${tags}</td></tr>`;
+  }).join("");
+}
+
+function showError(msg) {
+  $("error").style.display = msg ? "block" : "none";
+  $("error").textContent = msg || "";
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("api/status", {cache: "no-store"});
+    if (!r.ok) throw new Error("status " + r.status);
+    data = await r.json();
+    showError(data.live ? "" : "Can't reach the exporter: GPU and hashrate numbers are unavailable.");
+    render();
+  } catch (e) {
+    showError("Can't reach the control panel: " + e.message);
+  }
+}
+
+async function send(body) {
+  busy = true; if (data) render();
+  try {
+    const r = await fetch("api/control", {method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify(body)});
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+  } catch (e) {
+    showError("Couldn't save: " + e.message);
+  }
+  busy = false;
+  await refresh();
+}
+
+$("pause").onclick = () => send({paused: !(data.control || {}).paused});
+$("modes").querySelectorAll("button").forEach(btn => btn.onclick = () => send({power_mode: btn.dataset.mode}));
+$("coin").onchange = e => send({pin: e.target.value});
+$("check").onclick = () => send({check: true});
+$("bench-cancel").onclick = () => send({benchmark_cancel: true});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

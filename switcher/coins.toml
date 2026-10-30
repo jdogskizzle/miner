@@ -11,6 +11,8 @@ pool_fee = 0.01           # Kryptex pool fee
 pool_region = "us"        # Kryptex region: us, eu, br, sg, hk, ru, ae; "" = global endpoint
 default_coin = ""         # coin to start on before the first comparison; "" = first coin below
 pin = ""                  # set to a coin key (e.g. "PRL") to always mine that coin
+power_mode = "efficient"  # max, efficient or low (the control panel can override it)
+auto_benchmark = true     # benchmark a coin the first time it's mined, to find its power modes
 
 # Per coin:
 #   algorithm      SRBMiner algorithm name
@@ -21,8 +23,10 @@ pin = ""                  # set to a coin key (e.g. "PRL") to always mine that c
 #   benchmark_hs   optional: expected hashrate (H/s). Without it, hashrate.no's benchmark for
 #                  GPU_MODEL (.env) is used until the miner has measured this GPU's own
 #                  (kept in state/hashrates.json)
-#   power_limit / core_clock / mem_clock   applied while mining this coin (clocks optional,
-#                  and specific to the GPU they were tuned on)
+#   power_limit    power cap (W) while mining or benchmarking this coin
+#   core_clock / mem_clock   optional clock locks for a coin that hasn't been benchmarked.
+#                  Once it has, the benchmark's settings for the chosen power mode are used
+#                  instead (state/tuning.json; re-run from the control panel)
 
 [coins.PRL]
 name = "Pearl"
@@ -32,8 +36,6 @@ dev_fee = 0.02
 whattomine_id = 469
 hashrate_no = "PRL"
 power_limit = 250
-core_clock = 1500            # tuned for an RTX 3080 Ti (2026-10-29): ~122 TH/s at ~200 W.
-mem_clock = 810              # Re-tune or remove these two for a different GPU.
 
 [coins.QTC]
 name = "Quantus"

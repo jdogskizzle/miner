@@ -5,3 +5,7 @@ state/
 # Local backups
 *.bak*
 *.tmp
+
+# Host-specific deployment
+docker-compose.override.yml
+__pycache__/

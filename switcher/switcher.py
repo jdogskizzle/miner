@@ -4,7 +4,15 @@ this GPU and switches the miner to a better one when it's clearly and consistent
 It only decides *which coin*. The active choice is written to /state/active.env (sourced
 by the miner and gpu-yield) and /state/active.json (read by the exporter). When the coin
 changes and the miner is running, it's restarted; if gpu-yield has it paused, the next
-start simply uses the new coin."""
+start simply uses the new coin.
+
+Each coin runs in a power mode (max, efficient or low) chosen in coins.toml or the control
+panel. A mode's power limit and clocks come from gpu-yield's benchmark of that coin
+(/state/tuning.json); a coin not benchmarked yet runs on its coins.toml settings.
+
+The control panel can pin a coin, change the power mode or ask for an immediate check
+through /state/control.json; estimates are written to /state/estimates.json for it to show,
+and every coin's pool settings to /state/coins.json for gpu-yield's benchmarks."""
 import html
 import http.client
 import json
@@ -22,10 +30,13 @@ CONFIG = os.environ.get("COINS_FILE", "/config/coins.toml")
 STATE = os.environ.get("STATE_DIR", "/state")
 MINER = os.environ.get("MINER_CONTAINER", "miner")
 MINER_API = os.environ.get("MINER_API", "http://miner:21550")
-GPU_MODEL = os.environ.get("GPU_MODEL", "3080ti")  # hashrate.no GPU page, e.g. 3080ti, 4090, 7900xtx
+GPU_MODEL = os.environ.get("GPU_MODEL", "")  # hashrate.no GPU page, e.g. 3080ti, 4090, 7900xtx
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) home-server coin switcher"}
 UNITS = {"": 1, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18}
 
+MODES = ("max", "efficient", "low")
+MARKET = {}       # last market data, to re-estimate when only the power mode changes
+CHECKING = True   # False while refreshing a profile between checks (keeps next_check)
 metrics = {"estimates": {}, "rev": {}, "hashrate": {}, "source": {}, "price": {}, "btc": None,
            "switches": 0, "last_check": 0, "ok": 0}
 
@@ -57,14 +68,42 @@ def pool_address(coin):
     return coin["pool"].replace("{region}", f"-{region}" if region else "")
 
 
+def power_mode():
+    """The control panel's power mode, else coins.toml's."""
+    mode = read_json("control.json", {}).get("power_mode")
+    return mode if mode in MODES else CFG["settings"].get("power_mode", "efficient")
+
+
+def mode_settings(key, coin):
+    """Power limit and clocks for a coin in the current power mode: from its benchmark when
+    it has one, else coins.toml. `hashrate_key` names its measured hashrate in hashrates.json."""
+    mode = power_mode()
+    tuned = read_json("tuning.json", {}).get(key) or {}
+    m = (tuned.get("modes") or {}).get(mode)
+    if m:
+        return {"power_mode": mode, "tuned": True, "power_limit": tuned.get("power_limit", coin.get("power_limit", 250)),
+                "core_clock": m.get("core_clock") or "", "mem_clock": m.get("mem_clock") or "",
+                "expected_hashrate": m.get("hashrate"), "expected_power": m.get("power"),
+                "hashrate_key": f"{key}/{mode}"}
+    return {"power_mode": mode, "tuned": False, "power_limit": coin.get("power_limit", 250),
+            "core_clock": coin.get("core_clock", ""), "mem_clock": coin.get("mem_clock", ""),
+            "expected_hashrate": None, "expected_power": None, "hashrate_key": f"{key}/base"}
+
+
 def write_profile(key, coin, rev, since):
+    old = read_json("active.json", {}) or {}
+    ms = mode_settings(key, coin)
+    clocks = (ms["power_limit"], ms["core_clock"], ms["mem_clock"])
+    same = old.get("coin") == key and (old.get("power_limit"), old.get("core_clock"), old.get("mem_clock")) == clocks
     prof = {"coin": key, "name": coin["name"], "algorithm": coin["algorithm"], "pool": pool_address(coin),
-            "power_limit": coin.get("power_limit", 250), "core_clock": coin.get("core_clock", ""),
-            "mem_clock": coin.get("mem_clock", ""), "rev_per_hs_day": rev,
+            **ms, "rev_per_hs_day": rev,
             "fee_factor": (1 - coin.get("dev_fee", 0)) * (1 - CFG["settings"].get("pool_fee", 0)),
-            "price_usd": metrics["price"].get(key), "since": since}
+            "price_usd": metrics["price"].get(key), "since": since,
+            # when these clocks started, so hashrate learning skips the minutes after a change
+            "settings_since": old.get("settings_since", since) if same else time.time()}
     write_atomic("active.json", json.dumps(prof, indent=1))
-    env = {"PROFILE_COIN": key, "ALGORITHM": coin["algorithm"], "POOL": prof["pool"],
+    env = {"PROFILE_COIN": key, "PROFILE_MODE": ms["power_mode"] if ms["tuned"] else "",
+           "ALGORITHM": coin["algorithm"], "POOL": prof["pool"],
            "PROFILE_POWER_LIMIT": prof["power_limit"], "PROFILE_CORE_CLOCK": prof["core_clock"],
            "PROFILE_MEM_CLOCK": prof["mem_clock"]}
     write_atomic("active.env", "".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
@@ -88,6 +127,19 @@ def docker(method, path):
     r = c.getresponse()
     body = r.read()
     return r.status, (json.loads(body) if body and body[:1] in b"{[" else body)
+
+
+def benchmarking():
+    return os.path.exists(os.path.join(STATE, "bench.env"))
+
+
+def write_coins():
+    """Every coin's resolved pool and power limit, for gpu-yield's benchmarks."""
+    s = CFG["settings"]
+    write_atomic("coins.json", json.dumps({
+        "settings": {"auto_benchmark": s.get("auto_benchmark", False), "power_mode": s.get("power_mode", "efficient")},
+        "coins": {k: {"name": c["name"], "algorithm": c["algorithm"], "pool": pool_address(c),
+                      "power_limit": c.get("power_limit", 250)} for k, c in CFG["coins"].items()}}, indent=1))
 
 
 def miner_running():
@@ -156,14 +208,16 @@ def learn_hashrate(active):
         with urllib.request.urlopen(MINER_API, timeout=5) as r:
             d = json.load(r)
         a = d["algorithms"][0]
-        if a["name"] != active["algorithm"] or (a["pool"].get("uptime") or 0) < 1200:
+        if (a["name"] != active["algorithm"] or (a["pool"].get("uptime") or 0) < 1200 or benchmarking()
+                or time.time() - active.get("settings_since", 0) < 1200):
             return
         hs = float(a["hashrate"].get("15min") or 0)
         if hs <= 0:
             return
         known = read_json("hashrates.json", {})
-        old = known.get(active["coin"])
-        known[active["coin"]] = round(hs if not old else old * 0.7 + hs * 0.3, 2)  # smooth
+        key = active.get("hashrate_key") or active["coin"] + "/base"
+        old = known.get(key)
+        known[key] = round(hs if not old else old * 0.7 + hs * 0.3, 2)  # smooth
         write_atomic("hashrates.json", json.dumps(known, indent=1))
     except Exception:
         pass  # miner paused or not answering
@@ -171,8 +225,8 @@ def learn_hashrate(active):
 
 # ------------------------------------------------------------------ decision
 
-def estimate():
-    s = CFG["settings"]
+def fetch_market():
+    """{coin: (usd per H/s per day, usd volume per day, data source)} for every coin with data."""
     try:
         wtm = whattomine()
     except Exception as e:
@@ -183,8 +237,7 @@ def estimate():
     except Exception as e:
         log(f"hashrate.no unavailable: {e}")
         hrn = {}
-    measured = read_json("hashrates.json", {})
-    est = {}
+    market = {}
     for key, c in CFG["coins"].items():
         rev = vol = None
         src = None
@@ -202,64 +255,131 @@ def estimate():
             vol = hrn[c["hashrate_no"]][1]
         if rev is None:
             continue
-        # this GPU's measured hashrate > a benchmark set in coins.toml > hashrate.no's for GPU_MODEL
-        hs = measured.get(key) or c.get("benchmark_hs") or (hrn.get(c.get("hashrate_no")) or (0, 0, 0))[2]
+        hrn_hs = (hrn.get(c.get("hashrate_no")) or (0, 0, 0))[2]
+        market[key] = (rev, vol, src, hrn_hs)
+    return market
+
+
+def estimate(market):
+    """Estimated $/day per coin on this GPU in the current power mode."""
+    s = CFG["settings"]
+    measured = read_json("hashrates.json", {})
+    est = {}
+    for key, (rev, vol, src, hrn_hs) in market.items():
+        c = CFG["coins"][key]
+        ms = mode_settings(key, c)
+        # measured in this mode > this GPU's benchmark of the mode > benchmark_hs in coins.toml
+        # > hashrate.no's figure for GPU_MODEL
+        for hs, hs_src in ((measured.get(ms["hashrate_key"]), "measured"), (ms["expected_hashrate"], "benchmarked"),
+                           (c.get("benchmark_hs"), "coins.toml"), (hrn_hs, "hashrate.no")):
+            if hs:
+                break
         if not hs:
             continue
         usd = rev * hs * (1 - c.get("dev_fee", 0)) * (1 - s.get("pool_fee", 0))
         metrics["rev"][key], metrics["hashrate"][key] = rev, hs
-        metrics["source"][key] = ("measured" if key in measured else "benchmark", src)
+        metrics["source"][key] = (hs_src, src)
         est[key] = {"usd_day": usd, "rev": rev, "volume": vol,
                     "liquid": vol is None or vol >= s.get("min_volume_usd", 0)}
     metrics["estimates"] = {k: v["usd_day"] for k, v in est.items()}
     return est
 
 
+def pinned():
+    """(coin, where it was pinned): the control panel's pin wins over coins.toml's."""
+    pin = read_json("control.json", {}).get("pin") or ""
+    if pin in CFG["coins"]:
+        return pin, "the control panel"
+    pin = CFG["settings"].get("pin") or ""
+    return (pin, "coins.toml") if pin else ("", "")
+
+
+def refresh_profile():
+    """Power mode or benchmark results changed: rewrite the active coin's profile (gpu-yield
+    re-applies it without restarting the miner) and the estimates."""
+    active = read_json("active.json", None)
+    if not active or active.get("coin") not in CFG["coins"]:
+        return
+    cur = active["coin"]
+    est = estimate(MARKET)
+    prof = write_profile(cur, CFG["coins"][cur], est.get(cur, {}).get("rev", active.get("rev_per_hs_day")), active["since"])
+    if est:
+        write_estimates(est, cur)
+    log(f"{cur} profile: {prof['power_mode']} mode" + ("" if prof["tuned"] else " (not benchmarked, coins.toml settings)")
+        + f", {prof['power_limit']} W, core {prof['core_clock'] or 'auto'}, memory {prof['mem_clock'] or 'auto'} MHz")
+
+
+def write_estimates(est, cur):
+    coins = {}
+    for key, c in CFG["coins"].items():
+        e = est.get(key, {})
+        src = metrics["source"].get(key, (None, None))
+        coins[key] = {"name": c["name"], "usd_day": e.get("usd_day"), "liquid": e.get("liquid", True),
+                      "hashrate": metrics["hashrate"].get(key), "hashrate_source": src[0],
+                      "data_source": src[1], "price_usd": metrics["price"].get(key)}
+    old = read_json("estimates.json", {}) or {}
+    write_atomic("estimates.json", json.dumps({
+        "updated": time.time(), "active": cur, "btc_usd": metrics["btc"], "power_mode": power_mode(),
+        "next_check": old.get("next_check") if CHECKING is False else time.time() + CFG["settings"]["check_minutes"] * 60,
+        "coins": coins}, indent=1))
+
+
 def check():
     s = CFG["settings"]
+    pin, pin_src = pinned()
     st = read_json("switcher.json", {"streak": {}})
     active = read_json("active.json", None)
     if not active or active.get("coin") not in CFG["coins"]:
-        key = s.get("pin") or s.get("default_coin") or next(iter(CFG["coins"]))
+        key = pin or s.get("default_coin") or next(iter(CFG["coins"]))
         active = write_profile(key, CFG["coins"][key], None, time.time())
         log(f"no active coin yet, starting with {key}")
     learn_hashrate(active)
-    est = estimate()
-    if not est:
-        log("no market data this round, staying on " + active["coin"])
-        return
+    global MARKET
+    market = fetch_market()
+    if market:
+        MARKET = market
+    est = estimate(market)
     cur = active["coin"]
+    if est:
+        write_estimates(est, cur)
+        log("estimates: " + ", ".join(f"{k} ${est[k]['usd_day']:.2f}" + ("" if est[k]["liquid"] else " (thin market)")
+                                      for k in sorted(est, key=lambda k: -est[k]["usd_day"])))
+    if pin:
+        if pin != cur:
+            switch(pin, est.get(pin, {}).get("rev"), f"pinned in {pin_src}")
+        elif cur in est:
+            write_profile(cur, CFG["coins"][cur], est[cur]["rev"], active["since"])
+        st["streak"] = {}
+        write_atomic("switcher.json", json.dumps(st))
+        metrics["last_check"], metrics["ok"] = time.time(), 1
+        return
+    if not est:
+        log("no market data this round, staying on " + cur)
+        return
     if cur in est:  # keep the profile's earnings rate fresh for the exporter
         active = write_profile(cur, CFG["coins"][cur], est[cur]["rev"], active["since"])
     ranking = sorted((k for k in est if est[k]["liquid"]), key=lambda k: -est[k]["usd_day"])
-    log("estimates: " + ", ".join(f"{k} ${est[k]['usd_day']:.2f}" + ("" if est[k]["liquid"] else " (thin market)")
-                                  for k in sorted(est, key=lambda k: -est[k]["usd_day"])))
-    pin = s.get("pin")
-    if pin:
-        target = pin
-        reason = "pinned in coins.toml"
+    best = ranking[0] if ranking else cur
+    cur_usd = est.get(cur, {}).get("usd_day", 0)
+    if best == cur:
+        st["streak"] = {}
+        target = None
+    elif est[best]["usd_day"] < cur_usd * (1 + s["switch_margin"]):
+        st["streak"] = {}
+        target = None
     else:
-        best = ranking[0] if ranking else cur
-        cur_usd = est.get(cur, {}).get("usd_day", 0)
-        if best == cur:
-            st["streak"] = {}
+        st["streak"] = {best: st["streak"].get(best, 0) + 1}
+        hours = (time.time() - active["since"]) / 3600
+        if st["streak"][best] < s["confirm_checks"]:
+            log(f"{best} ahead of {cur} (${est[best]['usd_day']:.2f} vs ${cur_usd:.2f}), "
+                f"check {st['streak'][best]}/{s['confirm_checks']}")
             target = None
-        elif est[best]["usd_day"] < cur_usd * (1 + s["switch_margin"]):
-            st["streak"] = {}
+        elif hours < s["min_hours_on_coin"]:
+            log(f"{best} ahead, but {cur} has only run {hours:.1f} h of {s['min_hours_on_coin']} h")
             target = None
         else:
-            st["streak"] = {best: st["streak"].get(best, 0) + 1}
-            hours = (time.time() - active["since"]) / 3600
-            if st["streak"][best] < s["confirm_checks"]:
-                log(f"{best} ahead of {cur} (${est[best]['usd_day']:.2f} vs ${cur_usd:.2f}), "
-                    f"check {st['streak'][best]}/{s['confirm_checks']}")
-                target = None
-            elif hours < s["min_hours_on_coin"]:
-                log(f"{best} ahead, but {cur} has only run {hours:.1f} h of {s['min_hours_on_coin']} h")
-                target = None
-            else:
-                target = best
-                reason = f"${est[best]['usd_day']:.2f}/day vs ${cur_usd:.2f}/day on {cur}"
+            target = best
+            reason = f"${est[best]['usd_day']:.2f}/day vs ${cur_usd:.2f}/day on {cur}"
     if target and target != cur:
         switch(target, est.get(target, {}).get("rev"), reason)
         st["streak"] = {}
@@ -272,7 +392,9 @@ def switch(key, rev, reason):
     write_profile(key, CFG["coins"][key], rev, time.time())
     metrics["switches"] += 1
     time.sleep(5)  # let gpu-yield pick up the new clocks first
-    if miner_running():
+    if benchmarking():
+        log("a benchmark is running; the miner moves to the new coin after it")
+    elif miner_running():
         docker("POST", f"/containers/{MINER}/restart?t=5")
         log("miner restarted on the new coin")
     else:
@@ -310,6 +432,37 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def tuning_mtime():
+    try:
+        return os.path.getmtime(os.path.join(STATE, "tuning.json"))
+    except OSError:
+        return 0
+
+
+def wait_for_next_check(until):
+    """Sleep until the next scheduled check. Returns early with "check" when the control panel
+    changes the pin or asks for a check now, or "profile" when the power mode or benchmark
+    results change."""
+    c = read_json("control.json", {})
+    pin, asked, mode, tuned = c.get("pin") or "", c.get("check_requested"), power_mode(), tuning_mtime()
+    while time.time() < until:
+        time.sleep(5)
+        c = read_json("control.json", {})
+        if (c.get("pin") or "") != pin:
+            log(f"control panel: pinned to {c['pin']}" if c.get("pin") else "control panel: unpinned")
+            return "check"
+        if c.get("check_requested") != asked:
+            log("control panel: check requested")
+            return "check"
+        if power_mode() != mode:
+            log(f"control panel: power mode {power_mode()}")
+            return "profile"
+        if tuning_mtime() != tuned:
+            log("new benchmark results")
+            return "profile"
+    return "check"
+
+
 def load_config():
     with open(CONFIG, "rb") as f:
         cfg = tomllib.load(f)
@@ -317,18 +470,31 @@ def load_config():
         val = cfg["settings"].get(opt)
         if val and val not in cfg["coins"]:
             raise SystemExit(f"{opt} = {val!r} is not a coin in {CONFIG}")
+    if cfg["settings"].get("power_mode", "efficient") not in MODES:
+        raise SystemExit(f"power_mode must be one of {', '.join(MODES)} in {CONFIG}")
     return cfg
 
 
 if __name__ == "__main__":
+    if not GPU_MODEL:
+        raise SystemExit("GPU_MODEL is not set (your GPU as named on hashrate.no, e.g. 3080ti)")
     CFG = load_config()
+    write_coins()
     threading.Thread(target=lambda: ThreadingHTTPServer(("", 9836), Handler).serve_forever(), daemon=True).start()
     log(f"switcher up: {len(CFG['coins'])} coins, checking every {CFG['settings']['check_minutes']} min"
         + (f", pinned to {CFG['settings']['pin']}" if CFG["settings"].get("pin") else ""))
+    todo = "check"
+    next_check = 0
     while True:
         try:
-            check()
+            if todo == "check":
+                CHECKING = True
+                check()
+                next_check = time.time() + CFG["settings"]["check_minutes"] * 60
+            else:
+                CHECKING = False
+                refresh_profile()
         except Exception as e:
             metrics["ok"] = 0
-            log(f"check failed: {e}")
-        time.sleep(CFG["settings"]["check_minutes"] * 60)
+            log(f"{todo} failed: {e}")
+        todo = wait_for_next_check(next_check)
