@@ -1,20 +1,21 @@
 #!/bin/bash
 # Keeps the miner at the lowest GPU priority: stops it as soon as any other
 # process wants the GPU, and starts it again after the GPU has been quiet for
-# RESUME_AFTER_IDLE seconds. Also lowers the power limit only while mining.
+# RESUME_AFTER_IDLE seconds. Applies the active coin's power limit and clock locks
+# (from the coin switcher's profile) only while mining.
 set -u
 
 MINER=${MINER_CONTAINER:-miner}
 INTERVAL=${CHECK_INTERVAL:-2}
 RESUME_AFTER_IDLE=${RESUME_AFTER_IDLE:-120}
 BUSY_PCT=${BUSY_PCT:-5}            # sm/mem % that counts as "in use"
-MINE_PL=${MINING_POWER_LIMIT:-250}
 ENABLED=${MINING_ENABLED:-true}
 
 log() { echo "$(date '+%F %T') $*"; }
 api() { curl -s --unix-socket /var/run/docker.sock "$@"; }
 
 DEFAULT_PL=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits | cut -d. -f1)
+MINE_PL=$DEFAULT_PL   # replaced by the active coin's power limit
 
 set_pl() {
   local cur
@@ -24,8 +25,8 @@ set_pl() {
 
 # Clock locks (tuned for the mining algorithm). Tracked in `locked` so nvidia-smi
 # only runs on changes; starts as 1 so the first unlock clears leftovers.
-MEM_CLOCK=${MINING_MEM_CLOCK:-}
-CORE_CLOCK=${MINING_CORE_CLOCK:-}
+MEM_CLOCK=""
+CORE_CLOCK=""
 locked=1
 lock_clocks() {
   [ "$locked" = 1 ] && return
@@ -42,8 +43,8 @@ unlock_clocks() {
   log "clocks back to normal"
 }
 
-# Power and clock settings come from the coin switcher's active profile when there is
-# one (each coin has its own tuning), otherwise from .env.
+# Power and clock settings come from the coin switcher's active profile (each coin has
+# its own tuning in coins.toml). The miner isn't started until there is one.
 PROFILE=/state/active.env
 profile_sig=""
 load_profile() {
@@ -75,6 +76,10 @@ stop_miner() {
 }
 
 start_miner() {
+  if [ -z "$profile_sig" ]; then
+    [ -z "${waiting_logged:-}" ] && log "waiting for the coin switcher to pick a coin" && waiting_logged=1
+    return
+  fi
   set_pl "$MINE_PL"   # also covers a miner started outside the watchdog
   lock_clocks
   if ! miner_running; then
@@ -104,9 +109,9 @@ if [ "$ENABLED" != true ] || [ -z "${KRYPTEX_USER:-}" ]; then
   while true; do sleep 3600 & wait $!; done
 fi
 
-log "watchdog up: default ${DEFAULT_PL}W, mining ${MINE_PL}W, resume after ${RESUME_AFTER_IDLE}s idle"
 unlock_clocks   # start from normal clocks; they're locked again when mining starts
 load_profile
+log "watchdog up: default ${DEFAULT_PL}W, mining ${MINE_PL}W (core ${CORE_CLOCK:-auto}, memory ${MEM_CLOCK:-auto} MHz), resume after ${RESUME_AFTER_IDLE}s idle"
 declare -A known=()
 first=1
 last_busy=0   # start mining right away if the GPU is idle at boot

@@ -22,6 +22,7 @@ CONFIG = os.environ.get("COINS_FILE", "/config/coins.toml")
 STATE = os.environ.get("STATE_DIR", "/state")
 MINER = os.environ.get("MINER_CONTAINER", "miner")
 MINER_API = os.environ.get("MINER_API", "http://miner:21550")
+GPU_MODEL = os.environ.get("GPU_MODEL", "3080ti")  # hashrate.no GPU page, e.g. 3080ti, 4090, 7900xtx
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) home-server coin switcher"}
 UNITS = {"": 1, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18}
 
@@ -50,14 +51,20 @@ def write_atomic(name, text):
     os.replace(path + ".tmp", path)
 
 
+def pool_address(coin):
+    """Pool address with the configured region filled in ("prl{region}.kryptex.network:7048")."""
+    region = CFG["settings"].get("pool_region", "")
+    return coin["pool"].replace("{region}", f"-{region}" if region else "")
+
+
 def write_profile(key, coin, rev, since):
-    prof = {"coin": key, "name": coin["name"], "algorithm": coin["algorithm"], "pool": coin["pool"],
+    prof = {"coin": key, "name": coin["name"], "algorithm": coin["algorithm"], "pool": pool_address(coin),
             "power_limit": coin.get("power_limit", 250), "core_clock": coin.get("core_clock", ""),
             "mem_clock": coin.get("mem_clock", ""), "rev_per_hs_day": rev,
             "fee_factor": (1 - coin.get("dev_fee", 0)) * (1 - CFG["settings"].get("pool_fee", 0)),
-            "since": since}
+            "price_usd": metrics["price"].get(key), "since": since}
     write_atomic("active.json", json.dumps(prof, indent=1))
-    env = {"PROFILE_COIN": key, "ALGORITHM": coin["algorithm"], "POOL": coin["pool"],
+    env = {"PROFILE_COIN": key, "ALGORITHM": coin["algorithm"], "POOL": prof["pool"],
            "PROFILE_POWER_LIMIT": prof["power_limit"], "PROFILE_CORE_CLOCK": prof["core_clock"],
            "PROFILE_MEM_CLOCK": prof["mem_clock"]}
     write_atomic("active.env", "".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
@@ -119,9 +126,10 @@ def whattomine():
 
 
 def hashrate_no():
-    """{ticker: (usd per H/s per day, usd volume per day)} from the 3080 Ti estimates page."""
+    """{ticker: (usd per H/s per day, usd volume per day, benchmark H/s)} from hashrate.no's
+    estimates page for this GPU model."""
     t = html.unescape(re.sub(r"<script.*?</script>|<style.*?</style>", "",
-                             fetch(os.environ.get("HASHRATE_NO_PAGE", "https://www.hashrate.no/gpus/3080ti")), flags=re.S))
+                             fetch(f"https://www.hashrate.no/gpus/{GPU_MODEL}"), flags=re.S))
     t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", t))
     vol = {m.group(4): float(m.group(1).replace(",", ""))
            for m in re.finditer(r"Volume \$([\d,]+) ([\d.]+) ([KMGTPE]?)h/s Hashrate (\S+)", t)}
@@ -129,7 +137,7 @@ def hashrate_no():
     for m in re.finditer(r"Hashrate (\S+) ([\d.]+) ([KMGTPE]?)h/s Power \d+ w .*? Revenue \$([\d.]+) ", t):
         tag, hs, unit, rev = m.group(1), float(m.group(2)), m.group(3), float(m.group(4))
         if hs > 0:
-            out[tag] = (rev / (hs * UNITS[unit]), vol.get(tag))
+            out[tag] = (rev / (hs * UNITS[unit]), vol.get(tag), hs * UNITS[unit])
     return out
 
 
@@ -184,7 +192,7 @@ def estimate():
             rev, vol, metrics["price"][key] = wtm[c["whattomine_id"]]
             src = "whattomine"
         elif c.get("hashrate_no") in hrn:
-            rev, vol = hrn[c["hashrate_no"]]
+            rev, vol, _ = hrn[c["hashrate_no"]]
             src = "hashrate.no"
             try:
                 metrics["price"][key] = hashrate_no_price(c["hashrate_no"])
@@ -194,7 +202,10 @@ def estimate():
             vol = hrn[c["hashrate_no"]][1]
         if rev is None:
             continue
-        hs = measured.get(key) or c["benchmark_hs"]
+        # this GPU's measured hashrate > a benchmark set in coins.toml > hashrate.no's for GPU_MODEL
+        hs = measured.get(key) or c.get("benchmark_hs") or (hrn.get(c.get("hashrate_no")) or (0, 0, 0))[2]
+        if not hs:
+            continue
         usd = rev * hs * (1 - c.get("dev_fee", 0)) * (1 - s.get("pool_fee", 0))
         metrics["rev"][key], metrics["hashrate"][key] = rev, hs
         metrics["source"][key] = ("measured" if key in measured else "benchmark", src)
@@ -209,7 +220,7 @@ def check():
     st = read_json("switcher.json", {"streak": {}})
     active = read_json("active.json", None)
     if not active or active.get("coin") not in CFG["coins"]:
-        key = s.get("pin") or "PRL"
+        key = s.get("pin") or s.get("default_coin") or next(iter(CFG["coins"]))
         active = write_profile(key, CFG["coins"][key], None, time.time())
         log(f"no active coin yet, starting with {key}")
     learn_hashrate(active)
@@ -302,9 +313,10 @@ class Handler(BaseHTTPRequestHandler):
 def load_config():
     with open(CONFIG, "rb") as f:
         cfg = tomllib.load(f)
-    pin = cfg["settings"].get("pin")
-    if pin and pin not in cfg["coins"]:
-        raise SystemExit(f"pin = {pin!r} is not a coin in {CONFIG}")
+    for opt in ("pin", "default_coin"):
+        val = cfg["settings"].get(opt)
+        if val and val not in cfg["coins"]:
+            raise SystemExit(f"{opt} = {val!r} is not a coin in {CONFIG}")
     return cfg
 
 

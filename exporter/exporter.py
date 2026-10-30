@@ -1,39 +1,14 @@
-"""Prometheus exporter for the miner: SRBMiner API stats, GPU stats from nvidia-smi,
-and an earnings estimate based on Pearl's current revenue per TH/s (hashrate.no)."""
+"""Prometheus exporter for the miner: SRBMiner API stats, GPU stats from nvidia-smi, and
+an earnings estimate for the active coin (rate and price from the coin switcher's profile)."""
 import json
 import os
-import re
 import subprocess
-import threading
-import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MINER_API = os.environ.get("MINER_API", "http://miner:21550")
-REVENUE_URL = os.environ.get("REVENUE_URL", "https://www.hashrate.no/coins/PRL")
-FEE_FACTOR = float(os.environ.get("FEE_FACTOR", "0.97"))  # 2% miner dev fee + 1% pool fee
+PROFILE = os.environ.get("PROFILE_FILE", "/state/active.json")  # written by the coin switcher
 PORT = int(os.environ.get("PORT", "9835"))
-
-revenue = {"usd_per_ths_day": None, "prl_usd": None, "updated": 0}
-
-
-def refresh_revenue():
-    while True:
-        try:
-            req = urllib.request.Request(REVENUE_URL, headers={"User-Agent": "Mozilla/5.0"})
-            text = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
-            text = re.sub(r"<[^>]+>", " ", text)
-            text = re.sub(r"\s+", " ", text)
-            rev = re.search(r"Est\. Revenue Up to date \$([0-9.]+)", text)
-            price = re.search(r"Price Up to date \$([0-9.]+)", text)
-            if rev:
-                revenue["usd_per_ths_day"] = float(rev.group(1))
-                revenue["updated"] = time.time()
-            if price:
-                revenue["prl_usd"] = float(price.group(1))
-        except Exception as e:
-            print("revenue fetch failed:", e, flush=True)
-        time.sleep(1800)
 
 
 GPU_FIELDS = {
@@ -85,24 +60,21 @@ def metrics():
     except Exception:
         add("miner_up", "1 if the miner is running", 0)  # stopped or paused by gpu-yield
 
-    # Earnings estimate
-    rate = revenue["usd_per_ths_day"]
-    add("pearl_revenue_usd_per_ths_day", "Pearl revenue per TH/s per day (hashrate.no)", rate)
-    add("pearl_price_usd", "Pearl price (hashrate.no)", revenue["prl_usd"])
-    # Value the hashrate with the active coin's rate from the coin switcher; fall back to
-    # Pearl's hashrate.no rate if the switcher hasn't written one yet.
-    est = None
+    # Active coin and earnings estimate, from the coin switcher's profile
     try:
-        with open("/state/active.json") as f:
+        with open(PROFILE) as f:
             prof = json.load(f)
-        if prof.get("rev_per_hs_day"):
-            est = hashrate * prof["rev_per_hs_day"] * prof.get("fee_factor", FEE_FACTOR)
     except (OSError, ValueError):
-        pass
-    if est is None and rate is not None:
-        est = hashrate / 1e12 * rate * FEE_FACTOR
-    if est is not None:
-        add("miner_est_usd_per_day", "Estimated $/day at the current hashrate, after fees", round(est, 4))
+        prof = {}
+    if prof.get("coin"):
+        lab = f'coin="{prof["coin"]}",name="{prof.get("name", prof["coin"])}"'
+        out.append(f"# HELP miner_active_coin Coin being mined\n# TYPE miner_active_coin gauge\nminer_active_coin{{{lab}}} 1")
+        if prof.get("price_usd"):
+            out.append(f"# HELP miner_coin_price_usd Price of the coin being mined\n# TYPE miner_coin_price_usd gauge\n"
+                       f"miner_coin_price_usd{{{lab}}} {prof['price_usd']:.10g}")
+        if prof.get("rev_per_hs_day"):
+            add("miner_est_usd_per_day", "Estimated $/day at the current hashrate, after fees",
+                round(hashrate * prof["rev_per_hs_day"] * prof.get("fee_factor", 1), 4))
     return "\n".join(out) + "\n"
 
 
@@ -120,5 +92,4 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    threading.Thread(target=refresh_revenue, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

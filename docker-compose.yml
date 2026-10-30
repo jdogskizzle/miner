@@ -57,7 +57,7 @@ services:
       options: { max-size: 10m, max-file: "3" }
 
   # Prometheus metrics (miner, GPU, $/day estimate) at http://miner-exporter:9835,
-  # scraped by Prometheus over the grafana_default network.
+  # scraped by Prometheus over the metrics network (METRICS_NETWORK in .env).
   exporter:
     build: ./exporter
     image: miner-exporter:local
@@ -74,7 +74,7 @@ services:
               capabilities: [gpu]
     volumes:
       - ./state:/state:ro           # active coin's earnings rate
-    networks: [default, grafana_default]
+    networks: [default, metrics]
     logging:
       options: { max-size: 10m, max-file: "3" }
 
@@ -84,11 +84,13 @@ services:
     image: coin-switcher:local
     container_name: coin-switcher
     restart: unless-stopped
+    environment:
+      GPU_MODEL: ${GPU_MODEL:-3080ti}   # hashrate.no GPU page used for benchmark hashrates
     volumes:
       - ./switcher/coins.toml:/config/coins.toml:ro
       - ./state:/state
       - /var/run/docker.sock:/var/run/docker.sock   # to restart the miner on a switch
-    networks: [default, grafana_default]
+    networks: [default, metrics]
     logging:
       options: { max-size: 10m, max-file: "3" }
 
@@ -96,5 +98,6 @@ volumes:
   cache:
 
 networks:
-  grafana_default:
+  metrics:   # the network Prometheus is on (your Grafana/Prometheus Compose project's)
     external: true
+    name: ${METRICS_NETWORK:-grafana_default}
