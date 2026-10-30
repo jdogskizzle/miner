@@ -74,10 +74,11 @@ def power_mode():
     return mode if mode in MODES else CFG["settings"].get("power_mode", "efficient")
 
 
-def mode_settings(key, coin):
-    """Power limit and clocks for a coin in the current power mode: from its benchmark when
-    it has one, else coins.toml. `hashrate_key` names its measured hashrate in hashrates.json."""
-    mode = power_mode()
+def mode_settings(key, coin, mode=None):
+    """Power limit and clocks for a coin in a power mode (default: the current one): from its
+    benchmark when it has one, else coins.toml. `hashrate_key` names its measured hashrate in
+    hashrates.json."""
+    mode = mode or power_mode()
     tuned = read_json("tuning.json", {}).get(key) or {}
     m = (tuned.get("modes") or {}).get(mode)
     if m:
@@ -261,25 +262,34 @@ def fetch_market():
 
 
 def estimate(market):
-    """Estimated $/day per coin on this GPU in the current power mode."""
+    """Estimated $/day per coin on this GPU in the current power mode, plus what each power
+    mode would earn (`modes`), for the control panel to compare."""
     s = CFG["settings"]
     measured = read_json("hashrates.json", {})
+    current = power_mode()
     est = {}
     for key, (rev, vol, src, hrn_hs) in market.items():
         c = CFG["coins"][key]
-        ms = mode_settings(key, c)
-        # measured in this mode > this GPU's benchmark of the mode > benchmark_hs in coins.toml
-        # > hashrate.no's figure for GPU_MODEL
-        for hs, hs_src in ((measured.get(ms["hashrate_key"]), "measured"), (ms["expected_hashrate"], "benchmarked"),
-                           (c.get("benchmark_hs"), "coins.toml"), (hrn_hs, "hashrate.no")):
+        modes = {}
+        for mode in MODES:
+            ms = mode_settings(key, c, mode)
+            # measured in this mode > this GPU's benchmark of the mode > benchmark_hs in
+            # coins.toml > hashrate.no's figure for GPU_MODEL
+            for hs, hs_src in ((measured.get(ms["hashrate_key"]), "measured"), (ms["expected_hashrate"], "benchmarked"),
+                               (c.get("benchmark_hs"), "coins.toml"), (hrn_hs, "hashrate.no")):
+                if hs:
+                    break
             if hs:
-                break
-        if not hs:
+                modes[mode] = {"usd_day": rev * hs * (1 - c.get("dev_fee", 0)) * (1 - s.get("pool_fee", 0)),
+                               "hashrate": hs, "hashrate_source": hs_src, "power": ms["expected_power"],
+                               "power_limit": ms["power_limit"], "core_clock": ms["core_clock"] or None,
+                               "mem_clock": ms["mem_clock"] or None, "tuned": ms["tuned"]}
+        if current not in modes:
             continue
-        usd = rev * hs * (1 - c.get("dev_fee", 0)) * (1 - s.get("pool_fee", 0))
-        metrics["rev"][key], metrics["hashrate"][key] = rev, hs
-        metrics["source"][key] = (hs_src, src)
-        est[key] = {"usd_day": usd, "rev": rev, "volume": vol,
+        cur = modes[current]
+        metrics["rev"][key], metrics["hashrate"][key] = rev, cur["hashrate"]
+        metrics["source"][key] = (cur["hashrate_source"], src)
+        est[key] = {"usd_day": cur["usd_day"], "rev": rev, "volume": vol, "modes": modes,
                     "liquid": vol is None or vol >= s.get("min_volume_usd", 0)}
     metrics["estimates"] = {k: v["usd_day"] for k, v in est.items()}
     return est
@@ -316,7 +326,7 @@ def write_estimates(est, cur):
         src = metrics["source"].get(key, (None, None))
         coins[key] = {"name": c["name"], "usd_day": e.get("usd_day"), "liquid": e.get("liquid", True),
                       "hashrate": metrics["hashrate"].get(key), "hashrate_source": src[0],
-                      "data_source": src[1], "price_usd": metrics["price"].get(key)}
+                      "data_source": src[1], "price_usd": metrics["price"].get(key), "modes": e.get("modes")}
     old = read_json("estimates.json", {}) or {}
     write_atomic("estimates.json", json.dumps({
         "updated": time.time(), "active": cur, "btc_usd": metrics["btc"], "power_mode": power_mode(),

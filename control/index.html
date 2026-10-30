@@ -44,6 +44,12 @@ button:hover:not(:disabled), select:hover { border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; min-width: 150px; }
 button.warn { background: var(--amber); border-color: var(--amber); color: #fff; font-weight: 600; min-width: 150px; }
+tr.pick { cursor: pointer; }
+tr.pick:hover td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+tr.chosen td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+td.radio { width: 28px; }
+.up { color: var(--green); } .down { color: var(--red); }
+.confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); background: var(--bg); }
 .seg button:last-child { border-right: 0; }
@@ -62,6 +68,7 @@ tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); 
 .tag.pin { border-color: var(--accent); color: var(--accent); }
 .tag.mode { border-color: var(--accent); color: var(--accent); text-transform: capitalize; }
 td button { padding: 3px 10px; font-size: 13px; }
+h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4px 8px; font-weight: 400; }
 .sub { color: var(--muted); font-size: 12px; }
 .table-wrap { overflow-x: auto; }
 .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 10px 0 4px; }
@@ -91,6 +98,23 @@ td button { padding: 3px 10px; font-size: 13px; }
     </div>
   </section>
 
+  <section class="card">
+    <h2>Power mode <select id="mode-coin" title="Coin to compare"></select></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Mode</th><th class="num">Hashrate</th><th class="num">Power</th>
+          <th class="num">Est. $/day</th><th class="num hide-sm">vs now</th></tr></thead>
+        <tbody id="mode-rows"></tbody>
+      </table>
+    </div>
+    <div class="note" id="mode-note" style="margin-top:8px"></div>
+    <div class="confirm" id="mode-confirm" style="display:none">
+      <button id="mode-apply" class="primary"></button>
+      <button id="mode-reset">Cancel</button>
+      <span class="note" id="mode-change"></span>
+    </div>
+  </section>
+
   <section class="card controls">
     <h2>Controls</h2>
     <div class="row">
@@ -99,15 +123,10 @@ td button { padding: 3px 10px; font-size: 13px; }
       <span class="note" id="pause-note"></span>
     </div>
     <div class="row">
-      <label>Power mode</label>
-      <div class="seg" id="modes">
-        <button data-mode="max">Max</button><button data-mode="efficient">Efficient</button><button data-mode="low">Low</button>
-      </div>
-      <span class="note" id="mode-note"></span>
-    </div>
-    <div class="row">
       <label for="coin">Coin</label>
       <select id="coin" disabled></select>
+      <button id="coin-apply" class="primary" style="display:none"></button>
+      <button id="coin-reset" style="display:none">Cancel</button>
       <span class="note" id="coin-note"></span>
     </div>
     <div class="row">
@@ -151,6 +170,9 @@ td button { padding: 3px 10px; font-size: 13px; }
 const $ = id => document.getElementById(id);
 const MODES = ["max", "efficient", "low"];
 let data = null, busy = false;
+let pickMode = null;   // power mode being previewed, not applied yet
+let viewCoin = null;   // coin shown in the power mode table (null = the active coin)
+let pickCoin = null;   // coin choice in the dropdown, not applied yet ("" = automatic)
 
 function hashrate(hs, unit = "/s") {
   if (!hs) return "–";
@@ -233,34 +255,31 @@ function render() {
     : ctl.paused ? "Stays paused until you resume, even after a restart"
     : "Other apps still take over the GPU automatically";
 
-  // Power mode
-  const mode = MODES.includes(ctl.power_mode) ? ctl.power_mode : d.config_power_mode;
-  $("modes").querySelectorAll("button").forEach(btn => {
-    btn.classList.toggle("on", btn.dataset.mode === mode);
-    btn.disabled = busy;
-  });
-  const tuned = act.coin && (d.tuning[act.coin] || {}).modes;
-  let modeNote;
-  if (!act.coin) modeNote = "";
-  else if (!tuned) modeNote = `${act.name} isn't benchmarked yet, so every mode runs on its default settings`;
-  else {
-    const m = tuned[mode];
-    modeNote = `${act.name}: ${hashrate(m.hashrate)} at ${Math.round(m.power)} W`
-      + ` (core ${clock(m.core_clock)}, memory ${clock(m.mem_clock)})`;
-    if (act.power_mode !== mode) modeNote += " · applying…";
-  }
-  $("mode-note").textContent = modeNote;
+  renderModes(d, act);
 
-  // Coin selector
+  // Coin selector: a change is only previewed until confirmed
   const sel = $("coin");
+  if (pickCoin === (ctl.pin || "")) pickCoin = null;
   if (document.activeElement !== sel) {
     const opts = [["", "Automatic (best paying)"], ...d.coins.map(c => [c.key, `${c.name} (${c.key})`])];
     sel.innerHTML = opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
-    sel.value = ctl.pin || "";
+    sel.value = pickCoin ?? (ctl.pin || "");
   }
   sel.disabled = busy;
+  const coinPending = pickCoin !== null;
+  $("coin-apply").style.display = $("coin-reset").style.display = coinPending ? "" : "none";
+  $("coin-apply").disabled = busy;
+  if (coinPending) {
+    $("coin-apply").textContent = pickCoin ? `Switch to ${coinName(pickCoin)}` : "Switch to automatic";
+  }
   const pin = ctl.pin || d.config_pin;
-  $("coin-note").textContent = ctl.pin
+  const pe = coinPending && pickCoin ? (((d.estimates || {}).coins || {})[pickCoin] || {}) : null;
+  $("coin-note").textContent = coinPending
+    ? (pickCoin ? `${coinName(pickCoin)}: ${usd(pe.usd_day)}/day in the current mode`
+                + (act.coin && pickCoin !== act.coin ? ` vs ${usd((((d.estimates || {}).coins || {})[act.coin] || {}).usd_day)} now` : "")
+                + " · switches right away and stays until unpinned"
+                : "Switcher goes back to picking the best-paying coin (it won't switch right away)")
+    : ctl.pin
     ? (act.coin === ctl.pin ? "Pinned" : `Switching to ${coinName(ctl.pin)}…`)
     : d.config_pin ? `Pinned to ${d.config_pin} in coins.toml` : "Switcher picks the coin";
 
@@ -304,7 +323,14 @@ function render() {
   }).join("");
   $("coins").querySelectorAll("button[data-pin]").forEach(btn => {
     btn.disabled = busy;
-    btn.onclick = () => send({pin: btn.dataset.pin});
+    btn.onclick = () => {
+      const k = btn.dataset.pin, e = coins[k] || {}, cur = coins[act.coin] || {};
+      const msg = k ? `Pin ${coinName(k)}? Estimated ${usd(e.usd_day)}/day in the current mode`
+                      + (act.coin && k !== act.coin ? ` (now ${usd(cur.usd_day)}/day on ${coinName(act.coin)})` : "")
+                      + ". The miner switches right away and stays on it until you unpin."
+                    : "Unpin? The switcher goes back to picking the best-paying coin.";
+      if (confirm(msg)) send({pin: k});
+    };
   });
   $("coins").querySelectorAll("button[data-bench]").forEach(btn => {
     if (busy) btn.disabled = true;
@@ -316,6 +342,73 @@ function render() {
   });
 
   $("updated").textContent = "updated " + new Date(d.now * 1000).toLocaleTimeString();
+}
+
+const MODE_INFO = {max: "Highest hashrate", efficient: "Most per watt, keeping 90%+ of max",
+                   low: "Most per watt, keeping 70%+ of max"};
+
+function renderModes(d, act) {
+  const ctl = d.control || {};
+  const current = MODES.includes(ctl.power_mode) ? ctl.power_mode : d.config_power_mode;
+  if (pickMode === current) pickMode = null;
+  const chosen = pickMode || current;
+
+  // coin picker for the comparison (defaults to the active coin)
+  const msel = $("mode-coin");
+  if (document.activeElement !== msel) {
+    msel.innerHTML = d.coins.map(c => `<option value="${c.key}">${c.name}${c.key === act.coin ? " (active)" : ""}</option>`).join("");
+    msel.value = viewCoin || act.coin || (d.coins[0] || {}).key;
+  }
+  const key = msel.value;
+  const e = ((d.estimates || {}).coins || {})[key] || {};
+  const modes = e.modes || {};
+  const tuned = ((d.tuning || {})[key] || {}).modes;
+  const base = (modes[current] || {}).usd_day;
+
+  $("mode-rows").innerHTML = MODES.map(m => {
+    const r = modes[m] || {}, t = (tuned || {})[m] || {};
+    const power = r.power ?? t.power;
+    let diff = "";
+    if (r.usd_day != null && base != null && m !== current) {
+      const dlt = r.usd_day - base;
+      diff = `<span class="${dlt >= 0 ? "up" : "down"}">${dlt >= 0 ? "+" : "−"}$${Math.abs(dlt).toFixed(2)}</span>`;
+    }
+    const tags = (m === current ? '<span class="tag on">current</span>' : "");
+    const clocks = r.tuned || t.core_clock !== undefined
+      ? `core ${clock(r.core_clock ?? t.core_clock)}, memory ${clock(r.mem_clock ?? t.mem_clock)}`
+      : "default settings";
+    return `<tr class="pick ${m === chosen ? "chosen" : ""}" data-mode="${m}">
+      <td class="radio"><input type="radio" name="mode" ${m === chosen ? "checked" : ""} tabindex="-1"></td>
+      <td><b>${cap(m)}</b> ${tags}<div class="sub">${MODE_INFO[m]} · ${clocks}</div></td>
+      <td class="num">${hashrate(r.hashrate)}${r.hashrate_source ? `<div class="sub">${r.hashrate_source}</div>` : ""}</td>
+      <td class="num">${power ? Math.round(power) + " W" : "–"}</td>
+      <td class="num"><b>${usd(r.usd_day)}</b></td>
+      <td class="num hide-sm">${diff}</td></tr>`;
+  }).join("");
+  $("mode-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => {
+    pickMode = tr.dataset.mode === current ? null : tr.dataset.mode;
+    render();
+  });
+
+  let note = "";
+  if (!tuned) note = `${coinName(key)} isn't benchmarked yet, so every mode runs on its default settings. Benchmark it from the coin list.`;
+  else if (!e.modes) note = "No price data for this coin yet.";
+  if (key !== act.coin && act.coin) note += (note ? " " : "") + `The mode applies to every coin; ${act.name || act.coin} is mining now.`;
+  if (act.coin && act.power_mode && act.power_mode !== current) note += (note ? " " : "") + "Applying…";
+  $("mode-note").textContent = note;
+
+  $("mode-confirm").style.display = pickMode ? "" : "none";
+  if (pickMode) {
+    $("mode-apply").textContent = `Switch to ${cap(pickMode)}`;
+    $("mode-apply").disabled = busy;
+    const a = (((d.estimates || {}).coins || {})[act.coin] || {}).modes || {};
+    const from = a[current] || {}, to = a[pickMode] || {};
+    const pf = from.power ?? ((tuned || {})[current] || {}).power, pt = to.power;
+    $("mode-change").textContent = act.coin && from.usd_day != null && to.usd_day != null
+      ? `${act.name}: ${usd(from.usd_day)} → ${usd(to.usd_day)}/day` + (pf && pt ? `, ${Math.round(pf)} → ${Math.round(pt)} W` : "")
+        + " · applies in a few seconds, no restart"
+      : "Applies in a few seconds, no restart";
+  }
 }
 
 function renderBenchmark(d, bs, now) {
@@ -392,8 +485,12 @@ async function send(body) {
 }
 
 $("pause").onclick = () => send({paused: !(data.control || {}).paused});
-$("modes").querySelectorAll("button").forEach(btn => btn.onclick = () => send({power_mode: btn.dataset.mode}));
-$("coin").onchange = e => send({pin: e.target.value});
+$("mode-coin").onchange = e => { viewCoin = e.target.value; render(); };
+$("mode-apply").onclick = () => { const m = pickMode; pickMode = null; send({power_mode: m}); };
+$("mode-reset").onclick = () => { pickMode = null; render(); };
+$("coin").onchange = e => { pickCoin = e.target.value; render(); };
+$("coin-apply").onclick = () => { const c = pickCoin; pickCoin = null; send({pin: c}); };
+$("coin-reset").onclick = () => { pickCoin = null; render(); };
 $("check").onclick = () => send({check: true});
 $("bench-cancel").onclick = () => send({benchmark_cancel: true});
 
