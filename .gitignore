@@ -1,0 +1,7 @@
+# Settings with your Kryptex login: copy .env.example to .env
+.env
+# Live data written by the coin switcher
+state/
+# Local backups
+*.bak*
+*.tmp

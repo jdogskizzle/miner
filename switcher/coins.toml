@@ -1,0 +1,90 @@
+# Coins the switcher may mine. All use your Kryptex account login, so payouts stay in BTC
+# whichever coin is active. Edit and `docker compose restart switcher` to apply.
+
+[settings]
+check_minutes = 30        # how often earnings are compared
+switch_margin = 0.15      # another coin must earn at least 15% more...
+confirm_checks = 2        # ...on this many checks in a row...
+min_hours_on_coin = 6     # ...and the current coin must have run at least this long
+min_volume_usd = 20000    # skip coins traded less than this per day (estimates unreliable)
+pool_fee = 0.01           # Kryptex pool fee
+pin = ""                     # set to a coin key (e.g. "PRL") to always mine that coin
+
+# Per coin:
+#   algorithm      SRBMiner algorithm name        pool       Kryptex US endpoint
+#   dev_fee        SRBMiner's fee for that algorithm
+#   whattomine_id  id in whattomine.com/coins.json (preferred data source)
+#   hashrate_no    ticker on hashrate.no (fallback data source, and volume)
+#   benchmark_hs   expected hashrate (H/s) until the miner has measured its own
+#   power_limit / core_clock / mem_clock   settings applied while mining (clocks optional)
+
+[coins.PRL]
+name = "Pearl"
+algorithm = "pearlhash"
+pool = "prl-us.kryptex.network:7048"
+dev_fee = 0.02
+whattomine_id = 469
+hashrate_no = "PRL"
+benchmark_hs = 121.5e12      # measured here with the tuned clocks below
+power_limit = 250
+core_clock = 1500            # tuned 2026-10-29: ~122 TH/s at ~200 W
+mem_clock = 810
+
+[coins.QTC]
+name = "Quantus"
+algorithm = "quantus"
+pool = "qtc-us.kryptex.network:7049"
+dev_fee = 0.02
+hashrate_no = "QUAN"         # not on WhatToMine (its "QTC" is Qubitcoin)
+benchmark_hs = 511e6         # measured here 2026-10-29 at 250 W, no clock tuning
+power_limit = 250
+
+[coins.IRON]
+name = "Iron Fish"
+algorithm = "fishhash"
+pool = "iron-us.kryptex.network:7017"
+dev_fee = 0.0085
+whattomine_id = 411
+hashrate_no = "IRON"
+benchmark_hs = 77.73e6
+power_limit = 250
+
+[coins.ERG]
+name = "Ergo"
+algorithm = "autolykos2"
+pool = "erg-us.kryptex.network:7021"
+dev_fee = 0.01
+whattomine_id = 340
+hashrate_no = "ERG"
+benchmark_hs = 229.71e6
+power_limit = 250
+
+[coins.XEL]
+name = "Xelis"
+algorithm = "xelishashv3"
+pool = "xel-us.kryptex.network:7019"
+dev_fee = 0.015
+whattomine_id = 459
+hashrate_no = "XEL"
+benchmark_hs = 14.77e3
+power_limit = 250
+
+[coins.RVN]
+name = "Ravencoin"
+algorithm = "kawpow"
+pool = "rvn-us.kryptex.network:7031"
+dev_fee = 0.0085
+whattomine_id = 234
+hashrate_no = "RVN"
+benchmark_hs = 45e6          # hashrate.no: 50.1 MH/s at 314 W; lower at our 250 W cap
+power_limit = 250
+
+[coins.XNA]
+name = "Neurai"
+algorithm = "kawpow"
+pool = "xna-us.kryptex.network:7024"
+dev_fee = 0.0085
+whattomine_id = 366
+hashrate_no = "XNA"
+benchmark_hs = 45e6
+power_limit = 250

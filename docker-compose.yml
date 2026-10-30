@@ -1,0 +1,100 @@
+# GPU mining at the lowest priority.
+#   miner      SRBMiner on Kryptex, paid to your Kryptex account (BTC) whatever the coin.
+#              Never started by Docker itself; gpu-yield starts and stops it.
+#   gpu-yield  Stops the miner the moment anything else uses the GPU (Wolf, Jellyfin,
+#              Immich, Stemmy, ...) and restarts it after RESUME_AFTER_IDLE quiet seconds.
+#              Applies the active coin's power limit and clocks only while mining.
+#   switcher   Picks the coin that pays best on this GPU (switcher/coins.toml) and writes
+#              it to ./state/active.env, which the miner and gpu-yield read.
+#   exporter   Prometheus metrics for Grafana.
+# Turn mining off: MINING_ENABLED=false in .env, then `docker compose up -d`.
+services:
+  miner:
+    build: ./miner
+    image: srbminer:3.8.0
+    container_name: miner
+    restart: "no"
+    init: true         # passes the stop signal on, so the miner exits at once
+    tty: true          # SRBMiner only prints its log to a terminal
+    env_file: .env
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - cache:/opt/srbminer/Cache   # compiled kernels, so restarts are quick
+      - ./state:/state:ro           # active coin from the switcher
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging:
+      options: { max-size: 10m, max-file: "3" }
+
+  gpu-yield:
+    build: ./gpu-yield
+    image: gpu-yield:local
+    container_name: gpu-yield
+    restart: unless-stopped
+    env_file: .env
+    pid: host          # to see every GPU process and tell which belong to the miner
+    privileged: true   # to change the GPU power limit
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./state:/state:ro           # active coin's power limit and clocks
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on: [miner]
+    logging:
+      options: { max-size: 10m, max-file: "3" }
+
+  # Prometheus metrics (miner, GPU, $/day estimate) at http://miner-exporter:9835,
+  # scraped by Prometheus over the grafana_default network.
+  exporter:
+    build: ./exporter
+    image: miner-exporter:local
+    container_name: miner-exporter
+    restart: unless-stopped
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./state:/state:ro           # active coin's earnings rate
+    networks: [default, grafana_default]
+    logging:
+      options: { max-size: 10m, max-file: "3" }
+
+  # Coin switcher. Metrics at http://coin-switcher:9836 for Prometheus.
+  switcher:
+    build: ./switcher
+    image: coin-switcher:local
+    container_name: coin-switcher
+    restart: unless-stopped
+    volumes:
+      - ./switcher/coins.toml:/config/coins.toml:ro
+      - ./state:/state
+      - /var/run/docker.sock:/var/run/docker.sock   # to restart the miner on a switch
+    networks: [default, grafana_default]
+    logging:
+      options: { max-size: 10m, max-file: "3" }
+
+volumes:
+  cache:
+
+networks:
+  grafana_default:
+    external: true
