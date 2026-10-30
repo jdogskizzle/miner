@@ -1,7 +1,7 @@
 # GPU miner
 
 Mines crypto on the server's GPU at the lowest priority: anything else that wants the
-GPU (Wolf game streaming, Jellyfin, Immich, Stemmy, …) gets it within about 2 seconds,
+GPU gets it within about 2 seconds,
 and mining resumes once the GPU has been quiet for 2 minutes. Payouts go to a
 [Kryptex](https://pool.kryptex.com) account in BTC, whichever coin is being mined.
 
