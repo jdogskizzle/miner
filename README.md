@@ -77,3 +77,8 @@ Clock locks are per coin in `coins.toml` and specific to the GPU they were tuned
 
 Pearl barely uses memory bandwidth, so slowing the memory frees power for the core.
 Memory-heavy algorithms need full memory clocks, so other coins run without locks.
+
+## License
+
+MIT, see [LICENSE](LICENSE). This covers the code in this repository only. SRBMiner-MULTI
+is a separate program, downloaded from its own releases at build time under its own terms.
