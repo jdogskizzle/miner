@@ -22,6 +22,9 @@ body { margin: 0; background: var(--bg); color: var(--text);
 main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; }
 h1 { font-size: 20px; margin: 0 0 16px; display: flex; justify-content: space-between; align-items: baseline; }
 h1 small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.head-right { display: flex; align-items: baseline; gap: 12px; }
+.head-right form { margin: 0; }
+button.link { background: none; border: 0; padding: 0; font-size: 13px; color: var(--accent); font-weight: 400; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 12px; font-weight: 600;
   display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
@@ -81,7 +84,8 @@ h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4
 </head>
 <body>
 <main>
-  <h1>Miner <small id="updated"></small></h1>
+  <h1>Miner <span class="head-right"><small id="updated"></small>
+    <form method="post" action="logout"><button class="link">Sign out</button></form></span></h1>
 
   <div class="card" id="error"></div>
 
@@ -462,6 +466,7 @@ function showError(msg) {
 async function refresh() {
   try {
     const r = await fetch("api/status", {cache: "no-store"});
+    if (r.status === 401) { location.href = "login"; return; }
     if (!r.ok) throw new Error("status " + r.status);
     data = await r.json();
     showError(data.live ? "" : "Can't reach the exporter: GPU and hashrate numbers are unavailable.");
@@ -476,6 +481,7 @@ async function send(body) {
   try {
     const r = await fetch("api/control", {method: "POST", headers: {"Content-Type": "application/json"},
                                          body: JSON.stringify(body)});
+    if (r.status === 401) { location.href = "login"; return; }
     if (!r.ok) throw new Error((await r.json()).error || r.status);
   } catch (e) {
     showError("Couldn't save: " + e.message);

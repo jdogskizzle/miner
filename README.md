@@ -13,7 +13,7 @@ and mining resumes once the GPU has been quiet for 2 minutes. Payouts go to a
 | `gpu-yield` | Watches every process on the GPU. Stops the miner when another app uses it (new process, graphics process, compute/encoder/decoder load) and starts it again after `RESUME_AFTER_IDLE` quiet seconds. Applies the active coin's power limit and clock locks only while mining, and restores full power and clocks first when yielding. Also runs the power-mode benchmarks (see Power modes). |
 | `switcher` | Every 30 minutes estimates what each coin in `switcher/coins.toml` would earn on this GPU (WhatToMine, falling back to hashrate.no) and switches when another coin is clearly and consistently better. Writes the choice, with the power mode's clocks, to `state/active.env` / `state/active.json`. |
 | `exporter` | Prometheus metrics: GPU power/temperature/clocks, hashrate, shares, the active coin and its price, and estimated $/day. |
-| `control` | Web control panel (`http://<host>:CONTROL_PORT`): live status, pause/resume, power mode, pin a coin or go back to automatic, benchmark a coin, compare prices now. It has no login, so keep it on your home network. |
+| `control` | Web control panel (`http://<host>:CONTROL_PORT`): live status, pause/resume, power mode, pin a coin or go back to automatic, benchmark a coin, compare prices now. It has its own sign-in page ([formlogin](https://github.com/jdogskizzle/formlogin), fetched by the build): set `CONTROL_USERNAME` and `CONTROL_PASSWORD_HASH` (`docker compose run --rm -it control python -m formlogin hash`). |
 
 How they connect:
 

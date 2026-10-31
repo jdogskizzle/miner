@@ -4,7 +4,9 @@ compare prices now.
 
 It never touches Docker or the GPU itself. Choices go into /state/control.json, which
 gpu-yield (pause, benchmarks) and the switcher (pin, power mode, check now) read; status
-comes from the state files they write and from the exporter's metrics."""
+comes from the state files they write and from the exporter's metrics.
+
+Everything except the sign-in page needs a signed-in session (formlogin)."""
 import json
 import os
 import re
@@ -13,6 +15,9 @@ import time
 import tomllib
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import formlogin
+import formlogin.httpserver
 
 
 def required(name):
@@ -26,7 +31,8 @@ STATE = required("STATE_DIR")
 COINS_FILE = required("COINS_FILE")
 EXPORTER_URL = required("EXPORTER_URL")
 PORT = int(os.environ.get("PORT", "8000"))
-PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+HERE = os.path.dirname(os.path.abspath(__file__))
+PAGE = os.path.join(HERE, "index.html")
 LIVE_METRICS = {"gpu_power_watts", "gpu_power_limit_watts", "gpu_temperature_celsius", "gpu_fan_percent",
                 "miner_up", "miner_hashrate_hs", "miner_shares_accepted", "miner_shares_rejected",
                 "miner_uptime_seconds", "miner_est_usd_per_day"}
@@ -125,11 +131,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in formlogin.SECURITY_HEADERS:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if formlogin.httpserver.handle(self, LOGIN, path):
+            return
         if path in ("/", "/index.html"):
             with open(PAGE, "rb") as f:
                 self.send(200, f.read(), "text/html; charset=utf-8")
@@ -139,7 +149,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path.split("?")[0] != "/api/control":
+        path = self.path.split("?")[0]
+        if formlogin.httpserver.handle(self, LOGIN, path):
+            return
+        if path != "/api/control":
             return self.send(404, {"error": "not found"})
         # JSON only: a plain cross-site form post can't set this content type.
         if not (self.headers.get("Content-Type") or "").startswith("application/json"):
@@ -160,5 +173,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     coins_config()  # fail now if coins.toml is missing or broken
+    LOGIN = formlogin.Login.from_env(  # CONTROL_USERNAME, CONTROL_PASSWORD_HASH, CONTROL_AUTH
+        "CONTROL", "miner", os.path.join(STATE, "session.key"), title="Miner",
+        icon="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2322c55e'/></svg>")
     print(time.strftime("%F %T"), f"control panel on :{PORT}", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
