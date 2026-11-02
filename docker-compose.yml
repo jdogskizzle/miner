@@ -95,13 +95,14 @@ services:
     logging:
       options: { max-size: 10m, max-file: "3" }
 
-  # Control panel at http://<host>:CONTROL_PORT, behind a login (CONTROL_USERNAME and
-  # CONTROL_PASSWORD_HASH in .env). Put it behind HTTPS before exposing it to the internet.
+  # Control panel at http://<host>:CONTROL_PORT, behind a login (set the password with
+  # docker compose exec control python -m formlogin passwd). Put it behind HTTPS before
+  # exposing it to the internet.
   control:
     build:
       context: ./control
       additional_contexts:
-        formlogin: ${FORMLOGIN_SRC:-https://github.com/jdogskizzle/formlogin.git#v1.0.0}   # sign-in library; FORMLOGIN_SRC=<folder> to build from a local copy
+        formlogin: ${FORMLOGIN_SRC:-https://github.com/jdogskizzle/formlogin.git#v2.0.0}   # sign-in library; FORMLOGIN_SRC=<folder> to build from a local copy
     image: miner-control:local
     container_name: miner-control
     restart: unless-stopped

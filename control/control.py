@@ -173,8 +173,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     coins_config()  # fail now if coins.toml is missing or broken
-    LOGIN = formlogin.Login.from_env(  # CONTROL_USERNAME, CONTROL_PASSWORD_HASH, CONTROL_AUTH
-        "CONTROL", "miner", os.path.join(STATE, "session.key"), title="Miner",
+    LOGIN = formlogin.Login.from_env(  # password: python -m formlogin passwd (see README)
+        "CONTROL", "miner", STATE, title="Miner",
         icon="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2322c55e'/></svg>")
     print(time.strftime("%F %T"), f"control panel on :{PORT}", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
