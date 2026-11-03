@@ -37,7 +37,28 @@ LIVE_METRICS = {"gpu_power_watts", "gpu_power_limit_watts", "gpu_temperature_cel
                 "miner_up", "miner_hashrate_hs", "miner_shares_accepted", "miner_shares_rejected",
                 "miner_uptime_seconds", "miner_est_usd_per_day"}
 MODES = ("max", "efficient", "low")
+POWER_FILE = "power.json"   # energy used while mining, per hour (written here)
+SAMPLE_SECONDS = 30
+KEEP_DAYS = 400
+WINDOWS = (("day", 86400), ("week", 7 * 86400), ("month", 30 * 86400), ("all", None))
 lock = threading.Lock()
+
+
+def env_rate():
+    """Default electricity price in $/kWh (POWER_USD_PER_KWH); the panel can override it."""
+    val = os.environ.get("POWER_USD_PER_KWH")
+    if not val:
+        return None
+    try:
+        rate = float(val)
+    except ValueError:
+        raise SystemExit(f"POWER_USD_PER_KWH must be a price in $/kWh, e.g. 0.13 (got {val!r})")
+    if not 0 <= rate <= 5:
+        raise SystemExit(f"POWER_USD_PER_KWH looks wrong: {rate} $/kWh")
+    return rate
+
+
+ENV_RATE = env_rate()
 
 
 def read_json(name, default):
@@ -74,12 +95,60 @@ def live():
     return out
 
 
+def sample_power():
+    """Every SAMPLE_SECONDS, add the GPU's energy (and the estimated earnings) to the
+    current hour's totals while the miner is running."""
+    last = None
+    while True:
+        now = time.time()
+        dt = min(now - last, 2 * SAMPLE_SECONDS) if last else SAMPLE_SECONDS
+        last = now
+        m = live() or {}
+        watts = m.get("gpu_power_watts")
+        if m.get("miner_up") and watts is not None:
+            usd_day = m.get("miner_est_usd_per_day") or 0
+            if (read_json("status.json", None) or {}).get("state") == "benchmarking":
+                # the exporter prices the active coin, not the one being benchmarked
+                coin = (read_json("benchmark.json", None) or {}).get("coin")
+                usd_day = ((read_json("estimates.json", None) or {}).get("coins", {}).get(coin) or {}).get("usd_day") or 0
+            with lock:
+                led = read_json(POWER_FILE, {})
+                hours = led.setdefault("hours", {})
+                h = str(int(now // 3600 * 3600))
+                secs, kwh, usd = hours.get(h, (0, 0, 0))
+                hours[h] = [round(secs + dt, 1), round(kwh + watts * dt / 3.6e6, 6), round(usd + usd_day * dt / 86400, 6)]
+                cutoff = now - KEEP_DAYS * 86400
+                for k in [k for k in hours if float(k) < cutoff]:
+                    del hours[k]
+                led.setdefault("since", now)
+                write_json(POWER_FILE, led)
+        time.sleep(SAMPLE_SECONDS)
+
+
+def power_summary(ctl):
+    led = read_json(POWER_FILE, {})
+    now = time.time()
+    windows = {}
+    for name, span in WINDOWS:
+        secs = kwh = usd = 0
+        for h, (s, k, u) in led.get("hours", {}).items():
+            if span is None or float(h) + 3600 > now - span:
+                secs, kwh, usd = secs + s, kwh + k, usd + u
+        windows[name] = {"mining_s": secs, "kwh": kwh, "earned": usd}
+    panel = ctl.get("power_price")
+    return {"rate": panel if panel is not None else ENV_RATE,
+            "rate_source": "panel" if panel is not None else ".env" if ENV_RATE is not None else None,
+            "env_rate": ENV_RATE, "since": led.get("since"), "windows": windows}
+
+
 def status():
     cfg = coins_config()
+    ctl = read_json("control.json", {})
     return {
         "now": time.time(),
         "watchdog": read_json("status.json", None),
-        "control": read_json("control.json", {}),
+        "control": ctl,
+        "power": power_summary(ctl),
         "active": read_json("active.json", None),
         "estimates": read_json("estimates.json", None),
         "tuning": read_json("tuning.json", {}),
@@ -94,7 +163,8 @@ def status():
 
 def update_control(req):
     """Apply {"paused": bool} / {"pin": "PRL" or ""} / {"check": true} /
-    {"power_mode": "max" | "efficient" | "low"} / {"benchmark": "PRL"} / {"benchmark_cancel": true}."""
+    {"power_mode": "max" | "efficient" | "low"} / {"benchmark": "PRL"} / {"benchmark_cancel": true} /
+    {"power_price": 0.13 ($/kWh) or null for the .env default}."""
     with lock:
         ctl = read_json("control.json", {})
         if "paused" in req:
@@ -119,6 +189,14 @@ def update_control(req):
         if req.get("benchmark_cancel"):
             ctl["benchmark_cancel"] = time.time()
             ctl.pop("benchmark", None)
+        if "power_price" in req:
+            rate = req["power_price"]
+            if rate is None:
+                ctl.pop("power_price", None)
+            elif isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0 <= rate <= 5:
+                raise ValueError("power_price must be a price in $/kWh between 0 and 5")
+            else:
+                ctl["power_price"] = rate
         write_json("control.json", ctl)
         return ctl
 
@@ -176,5 +254,6 @@ if __name__ == "__main__":
     LOGIN = formlogin.Login.from_env(  # password: python -m formlogin passwd (see README)
         "CONTROL", "miner", STATE, title="Miner",
         icon="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2322c55e'/></svg>")
+    threading.Thread(target=sample_power, daemon=True).start()
     print(time.strftime("%F %T"), f"control panel on :{PORT}", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

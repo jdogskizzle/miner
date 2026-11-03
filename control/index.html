@@ -78,6 +78,10 @@ h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4
 .bar div { height: 100%; background: var(--accent); transition: width .4s; }
 .bench-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .bench-head b { font-size: 16px; }
+.rate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.rate input { font: inherit; width: 90px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); text-align: right; }
+tr.total td { font-weight: 600; }
 #error { display: none; background: color-mix(in srgb, var(--red) 15%, var(--card)); border-color: var(--red); }
 @media (max-width: 560px) { .hide-sm { display: none; } .state { font-size: 19px; } .row > label { min-width: 0; width: 100%; } }
 </style>
@@ -95,6 +99,7 @@ h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4
     <div class="stats">
       <div class="stat"><b id="s-hash">–</b><span>Hashrate</span></div>
       <div class="stat"><b id="s-usd">–</b><span>Est. per day</span></div>
+      <div class="stat"><b id="s-net">–</b><span>After power, per day</span></div>
       <div class="stat"><b id="s-power">–</b><span>GPU power / cap</span></div>
       <div class="stat"><b id="s-temp">–</b><span>GPU temp / fan</span></div>
       <div class="stat"><b id="s-shares">–</b><span>Shares accepted / rejected</span></div>
@@ -107,7 +112,7 @@ h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4
     <div class="table-wrap">
       <table>
         <thead><tr><th></th><th>Mode</th><th class="num">Hashrate</th><th class="num">Power</th>
-          <th class="num">Est. $/day</th><th class="num hide-sm">vs now</th></tr></thead>
+          <th class="num">Est. $/day</th><th class="num">After power</th><th class="num hide-sm">vs now</th></tr></thead>
         <tbody id="mode-rows"></tbody>
       </table>
     </div>
@@ -117,6 +122,25 @@ h2 select { text-transform: none; letter-spacing: 0; font-size: 13px; padding: 4
       <button id="mode-reset">Cancel</button>
       <span class="note" id="mode-change"></span>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Power cost</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Period</th><th class="num hide-sm">Mining</th><th class="num">Energy</th>
+          <th class="num">Power cost</th><th class="num">Earned (est.)</th><th class="num">Net</th></tr></thead>
+        <tbody id="power-rows"></tbody>
+      </table>
+    </div>
+    <div class="rate">
+      <label for="rate">Electricity</label>
+      <input id="rate" type="number" min="0" max="500" step="0.01" inputmode="decimal"> <span>¢/kWh</span>
+      <button id="rate-save" style="display:none">Save</button>
+      <button id="rate-default" class="link" style="display:none"></button>
+      <span class="note" id="rate-note"></span>
+    </div>
+    <p class="note" id="power-note"></p>
   </section>
 
   <section class="card controls">
@@ -177,6 +201,7 @@ let data = null, busy = false;
 let pickMode = null;   // power mode being previewed, not applied yet
 let viewCoin = null;   // coin shown in the power mode table (null = the active coin)
 let pickCoin = null;   // coin choice in the dropdown, not applied yet ("" = automatic)
+let rateEdit = null;   // electricity price being typed (¢/kWh), not saved yet
 
 function hashrate(hs, unit = "/s") {
   if (!hs) return "–";
@@ -185,7 +210,10 @@ function hashrate(hs, unit = "/s") {
   while (hs >= 1000 && i < units.length - 1) { hs /= 1000; i++; }
   return hs.toFixed(hs < 10 ? 2 : hs < 100 ? 1 : 0) + " " + units[i] + unit;
 }
-const usd = v => v == null ? "–" : "$" + v.toFixed(2);
+const usd = v => v == null ? "–" : (v < 0 ? "−$" : "$") + Math.abs(v).toFixed(2);
+// $/day of electricity for a GPU drawing `watts` all day, or null without a price
+const powerDay = watts => data.power.rate != null && watts ? watts * 24 / 1000 * data.power.rate : null;
+const net = (usdDay, watts) => usdDay != null && powerDay(watts) != null ? usdDay - powerDay(watts) : null;
 function price(v) {
   if (v == null) return "–";
   return "$" + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toPrecision(3));
@@ -243,6 +271,7 @@ function render() {
   const mining = (w.state === "mining" || w.state === "benchmarking") && live.miner_up;
   $("s-hash").textContent = mining ? hashrate(live.miner_hashrate_hs) : "–";
   $("s-usd").textContent = mining && w.state === "mining" ? usd(live.miner_est_usd_per_day) : "–";
+  $("s-net").textContent = mining && w.state === "mining" ? usd(net(live.miner_est_usd_per_day, live.gpu_power_watts)) : "–";
   $("s-power").textContent = live.gpu_power_watts != null
     ? `${Math.round(live.gpu_power_watts)} / ${Math.round(live.gpu_power_limit_watts)} W` : "–";
   $("s-temp").textContent = live.gpu_temperature_celsius != null
@@ -260,6 +289,7 @@ function render() {
     : "Other apps still take over the GPU automatically";
 
   renderModes(d, act);
+  renderPower(d, now);
 
   // Coin selector: a change is only previewed until confirmed
   const sel = $("coin");
@@ -303,6 +333,11 @@ function render() {
     .sort((a, b) => (b.usd_day ?? -1) - (a.usd_day ?? -1));
   const best = ranked.find(c => c.usd_day != null && c.liquid);
   const benchBusy = bs.running || bs.queued;
+  const mode = (est && est.power_mode) || (MODES.includes(ctl.power_mode) ? ctl.power_mode : d.config_power_mode);
+  const netSub = c => {
+    const n = net(c.usd_day, ((c.modes || {})[mode] || {}).power);
+    return n == null ? "" : `<div class="sub">${usd(n)} after power</div>`;
+  };
   $("coins").innerHTML = ranked.map(c => {
     const tags = [];
     if (c.key === act.coin) tags.push(w.state === "mining" ? '<span class="tag on">mining</span>' : '<span class="tag">active coin</span>');
@@ -320,7 +355,7 @@ function render() {
     return `<tr class="${c.key === act.coin ? "active" : ""}">
       <td><b>${c.name}</b> <span class="sub">${c.key}</span> ${tags.join("")}
         <div class="sub">${c.algorithm} · ${tuneNote}</div></td>
-      <td class="num">${usd(c.usd_day)}</td>
+      <td class="num">${usd(c.usd_day)}${netSub(c)}</td>
       <td class="num">${hashrate(c.hashrate)}${hsSrc}</td>
       <td class="num hide-sm">${price(c.price_usd)}</td>
       <td class="btns">${pinBtn} ${benchBtn}</td></tr>`;
@@ -367,14 +402,16 @@ function renderModes(d, act) {
   const e = ((d.estimates || {}).coins || {})[key] || {};
   const modes = e.modes || {};
   const tuned = ((d.tuning || {})[key] || {}).modes;
-  const base = (modes[current] || {}).usd_day;
+  const powerOf = m => (modes[m] || {}).power ?? ((tuned || {})[m] || {}).power;
+  const value = m => d.power.rate != null ? net((modes[m] || {}).usd_day, powerOf(m)) : (modes[m] || {}).usd_day;
+  const base = value(current);
 
   $("mode-rows").innerHTML = MODES.map(m => {
     const r = modes[m] || {}, t = (tuned || {})[m] || {};
-    const power = r.power ?? t.power;
+    const power = powerOf(m);
     let diff = "";
-    if (r.usd_day != null && base != null && m !== current) {
-      const dlt = r.usd_day - base;
+    if (value(m) != null && base != null && m !== current) {
+      const dlt = value(m) - base;
       diff = `<span class="${dlt >= 0 ? "up" : "down"}">${dlt >= 0 ? "+" : "−"}$${Math.abs(dlt).toFixed(2)}</span>`;
     }
     const tags = (m === current ? '<span class="tag on">current</span>' : "");
@@ -386,7 +423,8 @@ function renderModes(d, act) {
       <td><b>${cap(m)}</b> ${tags}<div class="sub">${MODE_INFO[m]} · ${clocks}</div></td>
       <td class="num">${hashrate(r.hashrate)}${r.hashrate_source ? `<div class="sub">${r.hashrate_source}</div>` : ""}</td>
       <td class="num">${power ? Math.round(power) + " W" : "–"}</td>
-      <td class="num"><b>${usd(r.usd_day)}</b></td>
+      <td class="num">${usd(r.usd_day)}</td>
+      <td class="num"><b>${usd(net(r.usd_day, power))}</b>${powerDay(power) != null ? `<div class="sub">${usd(powerDay(power))} power</div>` : ""}</td>
       <td class="num hide-sm">${diff}</td></tr>`;
   }).join("");
   $("mode-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => {
@@ -408,11 +446,48 @@ function renderModes(d, act) {
     const a = (((d.estimates || {}).coins || {})[act.coin] || {}).modes || {};
     const from = a[current] || {}, to = a[pickMode] || {};
     const pf = from.power ?? ((tuned || {})[current] || {}).power, pt = to.power;
+    const nf = net(from.usd_day, pf), nt = net(to.usd_day, pt);
     $("mode-change").textContent = act.coin && from.usd_day != null && to.usd_day != null
-      ? `${act.name}: ${usd(from.usd_day)} → ${usd(to.usd_day)}/day` + (pf && pt ? `, ${Math.round(pf)} → ${Math.round(pt)} W` : "")
+      ? `${act.name}: ${usd(from.usd_day)} → ${usd(to.usd_day)}/day`
+        + (nf != null && nt != null ? ` (${usd(nf)} → ${usd(nt)} after power)` : "")
+        + (pf && pt ? `, ${Math.round(pf)} → ${Math.round(pt)} W` : "")
         + " · applies in a few seconds, no restart"
       : "Applies in a few seconds, no restart";
   }
+}
+
+const PERIODS = [["day", "Last 24 hours"], ["week", "Last 7 days"], ["month", "Last 30 days"], ["all", "All time"]];
+
+function renderPower(d, now) {
+  const p = d.power, rate = p.rate;
+  $("power-rows").innerHTML = PERIODS.map(([k, label]) => {
+    const w = p.windows[k], cost = rate != null ? w.kwh * rate : null;
+    const n = cost != null ? w.earned - cost : null;
+    const sub = k === "all" && p.since ? `<div class="sub">since ${new Date(p.since * 1000).toLocaleDateString()}</div>` : "";
+    return `<tr class="${k === "all" ? "total" : ""}"><td>${label}${sub}</td>
+      <td class="num hide-sm">${w.mining_s ? duration(w.mining_s) : "–"}</td>
+      <td class="num">${w.kwh.toFixed(w.kwh < 10 ? 2 : 1)} kWh</td>
+      <td class="num">${usd(cost)}</td>
+      <td class="num">${usd(w.earned)}</td>
+      <td class="num ${n == null ? "" : n >= 0 ? "up" : "down"}">${usd(n)}</td></tr>`;
+  }).join("");
+
+  // electricity price: typed in ¢/kWh, saved as $/kWh
+  const input = $("rate");
+  const saved = rate != null ? +(rate * 100).toFixed(4) : null;
+  if (rateEdit !== null && Number(rateEdit) === saved) rateEdit = null;
+  if (document.activeElement !== input && rateEdit === null) input.value = saved ?? "";
+  $("rate-save").style.display = rateEdit !== null ? "" : "none";
+  $("rate-save").disabled = busy || rateEdit === "" || !(Number(rateEdit) >= 0 && Number(rateEdit) <= 500);
+  const useEnv = p.rate_source === "panel" && rateEdit === null;
+  $("rate-default").style.display = useEnv ? "" : "none";
+  $("rate-default").disabled = busy;
+  $("rate-default").textContent = p.env_rate != null ? `Use .env default (${+(p.env_rate * 100).toFixed(4)}¢)` : "Clear";
+  $("rate-note").textContent = rateEdit !== null ? "" : p.rate_source === "panel" ? "set here"
+    : p.rate_source === ".env" ? "from .env (POWER_USD_PER_KWH)" : "not set: enter your price to see costs";
+  $("power-note").textContent = "GPU power while the miner runs, so the rest of the PC and the GPU's idle draw "
+    + "aren't counted. Earnings are the panel's estimates (Kryptex pays the actual amount). "
+    + "Costs use the current price for all past energy.";
 }
 
 function renderBenchmark(d, bs, now) {
@@ -498,6 +573,10 @@ $("coin").onchange = e => { pickCoin = e.target.value; render(); };
 $("coin-apply").onclick = () => { const c = pickCoin; pickCoin = null; send({pin: c}); };
 $("coin-reset").onclick = () => { pickCoin = null; render(); };
 $("check").onclick = () => send({check: true});
+$("rate").oninput = e => { rateEdit = e.target.value; render(); };
+$("rate").onkeydown = e => { if (e.key === "Enter" && !$("rate-save").disabled) $("rate-save").click(); };
+$("rate-save").onclick = () => { const c = Number(rateEdit); rateEdit = null; send({power_price: c / 100}); };
+$("rate-default").onclick = () => send({power_price: null});
 $("bench-cancel").onclick = () => send({benchmark_cancel: true});
 
 refresh();

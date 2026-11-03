@@ -41,6 +41,7 @@ Needs the NVIDIA Container Toolkit.
 | `GPU_MODEL` | Your GPU as named on hashrate.no (`/gpus/3080ti`), for benchmark hashrates |
 | `METRICS_NETWORK` | Docker network Prometheus is on; it scrapes `miner-exporter:9835` and `coin-switcher:9836` |
 | `CONTROL_PORT` | Host port for the control panel (default 8095) |
+| `POWER_USD_PER_KWH` | Electricity price in $/kWh (energy charge, e.g. `0.1338`) for the panel's power cost; optional, and the panel can change it |
 | `MINING_ENABLED`, `RESUME_AFTER_IDLE`, `EXTRA_ARGS` | Kill switch, quiet time before resuming, extra miner flags |
 
 Everything about coins (pools, region, power limits, clock tuning) is in `switcher/coins.toml`.
@@ -50,6 +51,10 @@ Everything about coins (pools, region, power limits, clock tuning) is in `switch
 - **Pause, power mode, pin a coin, benchmark, compare prices now:** the control panel. A pause holds until you
   resume, across restarts; other apps still take the GPU over either way. A pin switches
   within seconds; "Automatic" hands the choice back to the switch rules below.
+- **What does the power cost?** The control panel's Power cost card: energy the GPU used while mining
+  over the last day, week, month and all time, its cost at your electricity price, and estimated
+  earnings minus that cost. The panel adds this up every 30 seconds (`state/power.json`); it counts
+  GPU power only. Power mode and coin estimates also show $/day after power.
 - **Why did mining pause / resume?** `docker logs -f gpu-yield`
 - **Which coin, and why?** `docker logs -f coin-switcher`
 - **Turn mining off for good:** `MINING_ENABLED=false` in `.env`, then `docker compose up -d`

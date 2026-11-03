@@ -112,6 +112,7 @@ services:
       EXPORTER_URL: http://miner-exporter:9835
       CONTROL_USERNAME: ${CONTROL_USERNAME:-}
       CONTROL_PASSWORD_HASH: ${CONTROL_PASSWORD_HASH:-}
+      POWER_USD_PER_KWH: ${POWER_USD_PER_KWH:-}   # electricity price for the power cost (changeable in the panel)
     volumes:
       - ./switcher/coins.toml:/config/coins.toml:ro
       - ./state:/state              # writes control.json, reads everyone's status
